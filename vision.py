@@ -1,125 +1,144 @@
 import cv2
 import numpy as np
 
-def main():
-    # Initialize the webcam
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Change to 1 for external camera if needed
+# Initialize both cameras
+cap0 = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+cap1 = cv2.VideoCapture(2, cv2.CAP_DSHOW)
 
-    # Load the ArUco dictionary and set up the detector
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    parameters = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
+# Define the ArUco dictionary and detector parameters
+dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+parameters = cv2.aruco.DetectorParameters()
+detector = cv2.aruco.ArucoDetector(dictionary, parameters)
 
-    # Variables to manage ArUco detection
-    frozen_corners = None  # Stores the detected ArUco marker corners
-    detected_marker_ids = set()  # Track detected marker IDs
-    frozen_hull = None  # Stores the frozen convex hull
-    frozen_hull_smushed = None  # Stores the smushed hull
+# Function to detect ArUco markers and draw bounding boxes
+def detect_aruco_markers(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    markerCorners, markerIds, rejectedCandidates = detector.detectMarkers(gray)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed to grab frame")
-            break
+    if markerIds is not None:
+        for corners, marker_id in zip(markerCorners, markerIds):
+            corners = corners.reshape((4, 2)).astype(int)  # Ensure corners are integers
+            top_left, top_right, bottom_right, bottom_left = corners
 
-        # Convert the frame to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # Draw lines between the corners to form a rectangle
+            cv2.line(frame, tuple(top_left), tuple(top_right), (0, 255, 0), 2)
+            cv2.line(frame, tuple(top_right), tuple(bottom_right), (0, 255, 0), 2)
+            cv2.line(frame, tuple(bottom_right), tuple(bottom_left), (0, 255, 0), 2)
+            cv2.line(frame, tuple(bottom_left), tuple(top_left), (0, 255, 0), 2)
 
-        # Detect ArUco markers
-        marker_corners, marker_ids, _ = detector.detectMarkers(gray)
+            # Put the marker ID near the top-left corner
+            text_position = (top_left[0], top_left[1] - 10)  # Ensure text is above the marker
+            cv2.putText(frame, f"ID: {marker_id[0]}", text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # If markers are detected, process them
-        if marker_ids is not None and frozen_corners is None:
-            detected_marker_ids.update(marker_ids.flatten())
+    return frame, markerCorners, markerIds
 
-            # If all 4 markers are detected, freeze their corners
-            if len(detected_marker_ids) >= 4:
-                frozen_corners = [corner[0].astype(int) for corner in marker_corners]
-                print("All 4 markers detected and frozen.")
+# Function to detect the white pool ball
+def detect_white_ball(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Use frozen corners if available
-        if frozen_corners is not None and frozen_hull is None:
-            # Calculate the convex hull and smushed hull once
-            all_corners = np.array([pt for corner in frozen_corners for pt in corner], dtype=np.int32)
+    # Define range for white color in HSV
+    lower_white = np.array([0, 0, 200])  # Adjusted for white hue
+    upper_white = np.array([180, 30, 255])
 
-            # Compute convex hull
-            frozen_hull = cv2.convexHull(all_corners)
+    mask = cv2.inRange(hsv, lower_white, upper_white)
+    
+    # Find contours for the detected white regions
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    center = None
 
-            # Calculate the center of the hull
-            center_x = np.mean(frozen_hull[:, 0, 0])  # Mean of all x-coordinates
-            center_y = np.mean(frozen_hull[:, 0, 1])  # Mean of all y-coordinates
+    if contours:
+        # Find the largest contour (assuming it's the pool ball)
+        largest_contour = max(contours, key=cv2.contourArea)
+        ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
 
-            # Compress y-coordinates symmetrically toward the center
-            compression_factor = 0.6  # Adjust this factor to reduce height
-            frozen_hull_smushed = frozen_hull.copy()
-            for point in frozen_hull_smushed:
-                original_y = point[0][1]
-                point[0][1] = int(center_y + (original_y - center_y) * compression_factor)
+        # Only consider it a ball if the radius is above a threshold
+        if radius > 10:
+            center = (int(x), int(y))
+            cv2.circle(frame, center, int(radius), (0, 255, 0), 2)
 
-            print("Green frame frozen.")
+    return frame, center
 
-        # Draw the frozen green frame if available
-        if frozen_hull_smushed is not None:
-            cv2.polylines(frame, [frozen_hull_smushed], isClosed=True, color=(0, 255, 0), thickness=2)
+# Function to detect the blue cue stick and its orientation
+def detect_cue_orientation_and_draw(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-            # Detect the white cue ball
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            lower_white = np.array([0, 0, 200])  # Adjust if needed
-            upper_white = np.array([180, 50, 255])
-            ball_mask = cv2.inRange(hsv, lower_white, upper_white)
-            contours, _ = cv2.findContours(ball_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Define range for blue color in HSV
+    lower_blue = np.array([100, 50, 150])  # Decrease Saturation and Increase Value
+    upper_blue = np.array([140, 200, 255])  # Optionally refine Saturation and keep Value maxed out
 
-            cue_ball_center = None
-            if contours:
-                largest_contour = max(contours, key=cv2.contourArea)
-                (cx, cy), radius = cv2.minEnclosingCircle(largest_contour)
-                if radius > 5:  # Ensure it's not a tiny object
-                    cue_ball_center = (int(cx), int(cy))
-                    cv2.circle(frame, cue_ball_center, int(radius), (0, 255, 0), 2)
+    mask = cv2.inRange(hsv, lower_blue, upper_blue)
 
-            # Detect the blue tip and cue stick
-            lower_blue = np.array([100, 150, 50])  # Adjust thresholds for blue
-            upper_blue = np.array([140, 255, 255])
-            blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
-            blue_contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Find contours for the blue stick
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            if blue_contours:
-                largest_blue_contour = max(blue_contours, key=cv2.contourArea)
-                blue_center, blue_radius = cv2.minEnclosingCircle(largest_blue_contour)
-                blue_center = (int(blue_center[0]), int(blue_center[1]))
+    if contours:
+        # Use the largest contour to approximate the stick
+        largest_contour = max(contours, key=cv2.contourArea)
+        [vx, vy, x, y] = cv2.fitLine(largest_contour, cv2.DIST_L2, 0, 0.01, 0.01)
 
-                if blue_radius > 5:  # Ensure it's not a tiny object
-                    cv2.circle(frame, blue_center, int(blue_radius), (255, 0, 0), 2)
+        # Calculate the endpoints of the stick's line
+        start_point = (int(x - vx * 500), int(y - vy * 500))  # Extend in the negative direction
+        end_point = (int(x + vx * 500), int(y + vy * 500))    # Extend in the positive direction
 
-                    # Find the line approximating the cue stick
-                    cue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
-                    cue_contours, _ = cv2.findContours(cue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Draw the stick's line on the frame
+        cv2.line(frame, start_point, end_point, (255, 0, 0), 3)
 
-                    if cue_contours:
-                        # Use the largest contour to approximate the stick
-                        largest_cue_contour = max(cue_contours, key=cv2.contourArea)
-                        [vx, vy, x, y] = cv2.fitLine(largest_cue_contour, cv2.DIST_L2, 0, 0.01, 0.01)
-                        lefty = int((-x * vy / vx) + y)
-                        righty = int(((frame.shape[1] - x) * vy / vx) + y)
-                        cv2.line(frame, (frame.shape[1] - 1, righty), (0, lefty), (0, 0, 255), 2)
+        # Calculate the angle of orientation in degrees
+        angle = np.arctan2(vy, vx) * 180 / np.pi
+        return int(angle), frame
 
-                        # Check if the blue tip points at the cue ball
-                        if cue_ball_center:
-                            distance = np.linalg.norm(np.array(blue_center) - np.array(cue_ball_center))
-                            if distance <= 50:  # Adjust this threshold
-                                print("YES TRUE")
-                            else:
-                                print("NO FALSE")
+    return None, frame
 
-        # Display the processed frame
-        cv2.imshow("Frame", frame)
+# Create a window for the projector display with a dynamic line
+def create_projector_window(angle, fixed_start=(260, 270), line_length=700, window_width=1280, window_height=800):
+    projector_background = np.full((window_height, window_width, 3), (50, 50, 50), dtype=np.uint8)
 
-        # Quit with 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+    if angle is not None:
+        # Calculate the end point of the line based on the angle
+        angle_rad = np.deg2rad(angle)
+        end_x = int(fixed_start[0] + line_length * np.cos(angle_rad))
+        end_y = int(fixed_start[1] + line_length * np.sin(angle_rad))
 
-    cap.release()
-    cv2.destroyAllWindows()
+        # Draw the line
+        cv2.line(projector_background, fixed_start, (end_x, end_y), (255, 255, 255), 5)
 
-if __name__ == "__main__":
-    main()
+    return projector_background
+
+# Main loop
+while True:
+    ret0, frame0 = cap0.read()
+    ret1, frame1 = cap1.read()
+
+    if not ret0 or not ret1:
+        print("Failed to grab frames from both cameras.")
+        break
+
+    # Camera 0: Detect ArUco markers and white ball
+    frame0, corners0, ids0 = detect_aruco_markers(frame0)
+    frame0, center0 = detect_white_ball(frame0)
+
+    # Camera 1: Detect blue cue stick
+    cue_angle, frame1 = detect_cue_orientation_and_draw(frame1)
+
+    # Combine the two feeds side by side for visualization
+    combined_frame = np.hstack((frame1, frame0))
+
+    # Create and display the projector window
+    projector_window = create_projector_window(cue_angle)
+    cv2.imshow("Projector Display", projector_window)
+
+    # Move the window to the projector screen (adjust position as needed)
+    cv2.moveWindow("Projector Display", 1470, 0)  # Assumes projector is to the right of the main screen
+
+    # Display the combined frame
+    cv2.imshow('Combined View', combined_frame)
+
+    # Break the loop on 'q'
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release resources
+cap0.release()
+cap1.release()
+cv2.destroyAllWindows()
+

@@ -1,9 +1,8 @@
 import cv2
 import numpy as np
 
-# Initialize both cameras
-cap0 = cv2.VideoCapture(1, cv2.CAP_DSHOW)
-cap1 = cv2.VideoCapture(2, cv2.CAP_DSHOW)
+cap0 = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap1 = cv2.VideoCapture(1, cv2.CAP_DSHOW)
 
 # Define the ArUco dictionary and detector parameters
 dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)

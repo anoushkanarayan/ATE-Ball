@@ -168,9 +168,13 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask):
         return None
         
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # HSV range for blue (cue)
-    lower_blue, upper_blue = np.array([100, 50, 150]), np.array([140, 200, 255])
-    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+    # HSV range for silver (light gray to white-ish colors)
+    # The exact range may need fine-tuning depending on the lighting conditions.
+    lower_silver = np.array([0, 0, 180])  # Light gray/white colors
+    upper_silver = np.array([180, 30, 255])  # Light gray/white colors
+    
+    # Create mask for silver objects (cue stick in this case)
+    mask = cv2.inRange(hsv, lower_silver, upper_silver)
     
     # Apply the ArUco mask to exclude those regions
     mask = cv2.bitwise_and(mask, aruco_mask)
@@ -179,21 +183,21 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if contours:
-        # Find the largest blue contour (the cue)
+        # Find the largest silver contour (the cue stick)
         largest_contour = max(contours, key=cv2.contourArea)
         
-        # Fit a line to the cue contour
+        # Fit a line to the silver contour (cue stick)
         [vx, vy, x, y] = cv2.fitLine(largest_contour, cv2.DIST_L2, 0, 0.01, 0.01)
         vx, vy = -vx, -vy  # Invert direction by 180 degrees
         
-        # Get cue ball position
+        # Get the cue ball position
         cue_x, cue_y = cue_ball
         
-        # We return the line parameters if the cue is close to the cue ball
-        # This is a simple proximity check that can be improved
+        # Return the line parameters (direction and origin)
         return vx, vy, cue_x, cue_y
         
     return None
+
 
 def find_intersecting_ball(frame, cue_line, aruco_mask):
     if cue_line is None:

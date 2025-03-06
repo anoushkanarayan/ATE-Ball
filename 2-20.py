@@ -86,29 +86,30 @@ def process_frame(frame, detector):
     # Detect cue ball
     cue_ball, cue_radius = detect_white_ball(frame, aruco_mask)
     
-    # Detect cue orientation if cue ball is found
-    cue_line = detect_cue_orientation(frame, cue_ball, aruco_mask)
-    
     # Draw the cue ball
     if cue_ball:
         cv2.circle(frame, cue_ball, cue_radius, (0, 255, 0), 2)
         cv2.putText(frame, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     
-    # Draw the cue line
-    if cue_line:
-        vx, vy, x0, y0 = cue_line
-        # Calculate points for drawing the line (extend it in the direction of the cue)
-        start_point = (int(x0), int(y0))
-        end_point = (int(x0 + vx * 1000), int(y0 + vy * 1000))
-        cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-    
-    # Find and mark the target ball
-    target_ball = find_intersecting_ball(frame, cue_line, aruco_mask)
-    if target_ball:
-        cv2.circle(frame, target_ball, 15, (0, 0, 255), 3)
-        cv2.putText(frame, "Target Ball", (target_ball[0] - 40, target_ball[1] - 20), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        # Only proceed with cue detection if we found the cue ball
+        # Detect cue orientation if cue ball is found
+        cue_line, is_pointing_at_ball = detect_cue_orientation(frame, cue_ball, aruco_mask)
+        
+        # Draw the cue line ONLY if it's pointing at the ball
+        if cue_line and is_pointing_at_ball:
+            vx, vy, x0, y0 = cue_line
+            # Calculate points for drawing the line (extend it in the direction of the cue)
+            start_point = (int(x0), int(y0))
+            end_point = (int(x0 + vx * 1000), int(y0 + vy * 1000))
+            cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
+        
+            # Find and mark the target ball only if cue is pointing at the ball
+            target_ball = find_intersecting_ball(frame, cue_line, aruco_mask)
+            if target_ball:
+                cv2.circle(frame, target_ball, 15, (0, 0, 255), 3)
+                cv2.putText(frame, "Target Ball", (target_ball[0] - 40, target_ball[1] - 20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
     
     return frame
 
@@ -165,7 +166,7 @@ def detect_white_ball(frame, aruco_mask):
 
 def detect_cue_orientation(frame, cue_ball, aruco_mask):
     if cue_ball is None:
-        return None
+        return None, False
         
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     # HSV range for silver (light gray to white-ish colors)
@@ -193,10 +194,30 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask):
         # Get the cue ball position
         cue_x, cue_y = cue_ball
         
-        # Return the line parameters (direction and origin)
-        return vx, vy, cue_x, cue_y
+        # Check if the cue is pointing at the ball
+        # Calculate distance from cue line to ball center
+        # The cue line starts at (x,y) and goes in direction (vx,vy)
         
-    return None
+        # Project vector from cue line point to ball onto the perpendicular to the cue direction
+        perp_x, perp_y = -vy, vx  # Perpendicular to (vx, vy)
+        vec_to_ball_x, vec_to_ball_y = cue_x - x, cue_y - y
+        
+        # Distance from line to point
+        distance = abs(vec_to_ball_x * perp_x + vec_to_ball_y * perp_y) / np.sqrt(perp_x**2 + perp_y**2)
+        
+        # Check if ball is ahead of the cue, not behind
+        dot_product = vec_to_ball_x * vx + vec_to_ball_y * vy
+        is_ahead = dot_product > 0
+        
+        # Maximum allowed distance (can be adjusted based on ball radius and tolerance)
+        max_distance = 20  # pixels
+        
+        is_pointing_at_ball = is_ahead and distance < max_distance
+        
+        # Return the line parameters (direction and origin) and whether it's pointing at the ball
+        return (vx, vy, cue_x, cue_y), is_pointing_at_ball
+        
+    return None, False
 
 
 def find_intersecting_ball(frame, cue_line, aruco_mask):

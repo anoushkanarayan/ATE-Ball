@@ -79,9 +79,27 @@ def main():
             output_writer.release()
         cv2.destroyAllWindows()
 
+def clip_line_to_bounds(start, end, bounds):
+    """ Clips a line segment to stay within the given bounds. """
+    x_min, y_min, x_max, y_max = bounds
+    
+    # Ensure the line does not extend past the bounding box
+    clipped_end = list(end)
+    if clipped_end[0] < x_min:
+        clipped_end[0] = x_min
+    elif clipped_end[0] > x_max:
+        clipped_end[0] = x_max
+    
+    if clipped_end[1] < y_min:
+        clipped_end[1] = y_min
+    elif clipped_end[1] > y_max:
+        clipped_end[1] = y_max
+    
+    return tuple(start), tuple(clipped_end)
+
 def process_frame(frame, detector):
-    # Detect ArUco markers
-    frame, aruco_mask = detect_aruco_markers(frame, detector)
+    # Detect ArUco markers and get boundary coordinates
+    frame, aruco_mask, bounds = detect_aruco_markers(frame, detector)
     
     # Detect cue ball
     cue_ball, cue_radius = detect_white_ball(frame, aruco_mask)
@@ -92,24 +110,21 @@ def process_frame(frame, detector):
         cv2.putText(frame, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     
-        # Only proceed with cue detection if we found the cue ball
-        # Detect cue orientation if cue ball is found
+        # Detect cue orientation
         cue_line, is_pointing_at_ball = detect_cue_orientation(frame, cue_ball, aruco_mask)
         
         # Draw the cue line ONLY if it's pointing at the ball
         if cue_line and is_pointing_at_ball:
             vx, vy, x0, y0 = cue_line
-            # Calculate points for drawing the line (extend it in the direction of the cue)
-            start_point = (int(x0), int(y0))
-            end_point = (int(x0 + vx * 1000), int(y0 + vy * 1000))
-            cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-        
-            # Find and mark the target ball only if cue is pointing at the ball
-            target_ball = find_intersecting_ball(frame, cue_line, aruco_mask)
-            if target_ball:
-                cv2.circle(frame, target_ball, 15, (0, 0, 255), 3)
-                cv2.putText(frame, "Target Ball", (target_ball[0] - 40, target_ball[1] - 20), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            
+            # Calculate end point of the line (extend in cue direction)
+            end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
+            
+            # Clip the line to stay within ArUco marker bounds
+            start_point, clipped_end_point = clip_line_to_bounds((int(x0), int(y0)), end_point, bounds)
+            
+            # Draw the clipped line
+            cv2.line(frame, start_point, clipped_end_point, (255, 0, 0), 2)
     
     return frame
 
@@ -121,8 +136,11 @@ def detect_aruco_markers(frame, detector):
     aruco_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
     
     if markerIds is not None:
+        all_corners = []
         for corners, marker_id in zip(markerCorners, markerIds):
             corners = corners.reshape((4, 2)).astype(int)
+            all_corners.extend(corners)
+            
             # Draw the ArUco markers on the frame
             cv2.polylines(frame, [corners], isClosed=True, color=(0, 255, 0), thickness=2)
             cv2.putText(frame, f"ID: {marker_id[0]}", (corners[0][0], corners[0][1] - 10),
@@ -130,8 +148,20 @@ def detect_aruco_markers(frame, detector):
             
             # Create a filled polygon mask for the ArUco marker
             cv2.fillPoly(aruco_mask, [corners], 0)
+        
+        # Get bounding box around all detected markers
+        if all_corners:
+            x_min = min([c[0] for c in all_corners])
+            y_min = min([c[1] for c in all_corners])
+            x_max = max([c[0] for c in all_corners])
+            y_max = max([c[1] for c in all_corners])
+            bounds = (x_min, y_min, x_max, y_max)
+        else:
+            bounds = (0, 0, frame.shape[1], frame.shape[0])
+    else:
+        bounds = (0, 0, frame.shape[1], frame.shape[0])
     
-    return frame, aruco_mask
+    return frame, aruco_mask, bounds
 
 def detect_white_ball(frame, aruco_mask):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)

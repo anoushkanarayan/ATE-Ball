@@ -210,17 +210,6 @@ def process_frame(frame, detector):
             
             # Draw the clipped line
             cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-            
-            # Find which ball the cue is pointing at
-            target_ball = find_intersecting_ball(frame, cue_line, aruco_mask, table_mask)
-            if target_ball:
-                cv2.circle(frame, target_ball, 10, (255, 255, 0), 2)  # Yellow highlight for target ball
-                cv2.putText(frame, "Target", (target_ball[0] - 25, target_ball[1] - 25), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-    
-    # Draw debug information
-    cv2.putText(frame, "Press 'q' to quit", (10, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
     return frame
 
@@ -275,20 +264,13 @@ def detect_aruco_markers(frame, detector):
                 cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 1)
         else:
             bounds = (0, 0, frame.shape[1], frame.shape[0])
-            table_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255  # Use full frame
     else:
         bounds = (0, 0, frame.shape[1], frame.shape[0])
-        table_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255  # Use full frame
-    
-    # Exclude the ArUco markers from the table mask
-    table_mask = cv2.bitwise_and(table_mask, aruco_mask)
     
     return frame, aruco_mask, bounds, table_mask
 
 def detect_white_ball(frame, aruco_mask, table_mask, bounds):
-    # Create a copy for debugging if needed
-    debug_frame = frame.copy()
-    
+
     # Method 1: HSV color filtering
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     # HSV range for white - slightly modified for better detection
@@ -297,21 +279,6 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds):
     
     # Only consider areas within the table bounds
     mask = cv2.bitwise_and(mask, table_mask)
-    
-    # Method 2: Also try Hough Circles for more reliable detection
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    circles = cv2.HoughCircles(
-        gray,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=30,
-        param1=50,
-        param2=25,
-        minRadius=10,
-        maxRadius=30
-    )
     
     # First try with contours from the mask
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -336,27 +303,6 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds):
             largest_contour = max(valid_contours, key=cv2.contourArea)
             ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
             if radius > 10:
-                return (int(x), int(y)), int(radius)
-    
-    # If contour method failed, try with Hough Circles
-    if circles is not None:
-        circles = np.uint16(np.around(circles))
-        
-        for circle in circles[0, :]:
-            x, y, radius = circle
-            
-            # Create a mask for this circle
-            ball_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-            cv2.circle(ball_mask, (x, y), radius, 255, -1)
-            
-            # Apply the ArUco mask
-            ball_mask = cv2.bitwise_and(ball_mask, aruco_mask)
-            
-            # Check if the circle appears white in HSV
-            ball_mask = cv2.bitwise_and(ball_mask, mask)
-            
-            # If the ball appears white, return it
-            if np.sum(ball_mask) > (np.pi * radius * radius * 0.5):
                 return (int(x), int(y)), int(radius)
     
     return None, None
@@ -514,10 +460,6 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
     # Apply the ArUco mask to exclude those regions
     mask = cv2.bitwise_and(mask, aruco_mask)
     
-    # If a table mask is provided, apply it as well
-    if table_mask is not None:
-        mask = cv2.bitwise_and(mask, table_mask)
-    
     # Find contours in the mask
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
@@ -578,10 +520,6 @@ def find_intersecting_ball(frame, cue_line, aruco_mask, table_mask=None):
     
     # Apply the ArUco mask to exclude those regions
     mask = cv2.bitwise_and(mask, aruco_mask)
-    
-    # If table mask is provided, apply it as well
-    if table_mask is not None:
-        mask = cv2.bitwise_and(mask, table_mask)
     
     # Find contours of the colored balls
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

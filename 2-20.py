@@ -121,10 +121,11 @@ def process_frame(frame, detector):
             end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
             
             # Clip the line to stay within ArUco marker bounds
-            start_point, clipped_end_point = clip_line_to_bounds((int(x0), int(y0)), end_point, bounds)
+            #start_point, clipped_end_point = clip_line_to_bounds((int(x0), int(y0)), end_point, bounds)
+            start_point = (int(x0), int(y0))
             
             # Draw the clipped line
-            cv2.line(frame, start_point, clipped_end_point, (255, 0, 0), 2)
+            cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
     
     return frame
 

@@ -2,6 +2,9 @@ import cv2
 import numpy as np
 import argparse
 
+LOCKED_BOUNDS = None
+LOCKED_TABLE_MASK = None
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Pool tracker with ArUco markers')
@@ -214,60 +217,57 @@ def process_frame(frame, detector):
     return frame
 
 def detect_aruco_markers(frame, detector):
+    global LOCKED_BOUNDS, LOCKED_TABLE_MASK
+
+    if LOCKED_BOUNDS is not None and LOCKED_TABLE_MASK is not None:
+        return frame, np.ones(frame.shape[:2], dtype=np.uint8) * 255, LOCKED_BOUNDS, LOCKED_TABLE_MASK
+
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     markerCorners, markerIds, _ = detector.detectMarkers(gray)
-    
-    # Create a mask to exclude ArUco marker regions
-    aruco_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
-    
-    # Create a mask for the table area (inside the ArUco markers)
-    table_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    
+
+    aruco_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255  # Default mask
+
     if markerIds is not None:
         all_corners = []
         for corners, marker_id in zip(markerCorners, markerIds):
             corners = corners.reshape((4, 2)).astype(int)
             all_corners.extend(corners)
-            
-            # Draw the ArUco markers on the frame
+
+            # Draw the ArUco markers
             cv2.polylines(frame, [corners], isClosed=True, color=(0, 255, 0), thickness=2)
             cv2.putText(frame, f"ID: {marker_id[0]}", (corners[0][0], corners[0][1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            # Create a filled polygon mask for the ArUco marker
-            cv2.fillPoly(aruco_mask, [corners], 0)
-        
-        # Get bounding box around all detected markers
+
         if all_corners:
             x_min = min([c[0] for c in all_corners])
             y_min = min([c[1] for c in all_corners])
             x_max = max([c[0] for c in all_corners])
             y_max = max([c[1] for c in all_corners])
             bounds = (x_min, y_min, x_max, y_max)
-            
-            # Create a convex hull of all marker corners to define the table area
-            if len(all_corners) >= 4:  # Need at least 4 points for a quadrilateral
+
+            table_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            if len(all_corners) >= 4:
                 hull = cv2.convexHull(np.array(all_corners))
                 cv2.fillPoly(table_mask, [hull], 255)
-                
-                # Draw the table boundary (optional visual feedback)
                 cv2.polylines(frame, [hull], isClosed=True, color=(0, 255, 255), thickness=1)
             else:
-                # If not enough corners, use the bounding box as the table area
-                table_points = np.array([
-                    [x_min, y_min], [x_max, y_min], 
-                    [x_max, y_max], [x_min, y_max]
-                ])
+                table_points = np.array([[x_min, y_min], [x_max, y_min], 
+                                         [x_max, y_max], [x_min, y_max]])
                 cv2.fillPoly(table_mask, [table_points], 255)
-                
-                # Draw the table boundary (optional visual feedback)
                 cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 1)
-        else:
-            bounds = (0, 0, frame.shape[1], frame.shape[0])
-    else:
-        bounds = (0, 0, frame.shape[1], frame.shape[0])
-    
-    return frame, aruco_mask, bounds, table_mask
+
+            # Lock in detected values
+            LOCKED_BOUNDS = bounds
+            LOCKED_TABLE_MASK = table_mask
+
+            return frame, aruco_mask, bounds, table_mask
+
+    # If detection fails and bounds are locked, return stored values
+    if LOCKED_BOUNDS is not None and LOCKED_TABLE_MASK is not None:
+        return frame, aruco_mask, LOCKED_BOUNDS, LOCKED_TABLE_MASK
+
+    # Default fallback case
+    return frame, aruco_mask, (0, 0, frame.shape[1], frame.shape[0]), np.ones(frame.shape[:2], dtype=np.uint8) * 255
 
 def detect_white_ball(frame, aruco_mask, table_mask, bounds):
 

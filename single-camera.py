@@ -6,6 +6,8 @@ LOCKED_BOUNDS = None
 LOCKED_TABLE_MASK = None
 
 def main():
+    print("Starting pool tracker with advanced physics...")
+    
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Pool tracker with ArUco markers')
     parser.add_argument('--video', type=str, default='', help='Path to video file (if not specified, camera will be used)')
@@ -81,6 +83,110 @@ def main():
         if output_writer is not None:
             output_writer.release()
         cv2.destroyAllWindows()
+
+def calculate_advanced_collision(cue_pos, target_pos, cue_radius, target_radius, stick_direction):
+    """
+    Calculate advanced collision trajectories between cue ball and target ball
+    using the physics from the matplotlib example.
+    
+    Args:
+        cue_pos: Position of the cue ball as (x, y)
+        target_pos: Position of the target ball as (x, y)
+        cue_radius: Radius of the cue ball
+        target_radius: Radius of the target ball
+        stick_direction: Direction vector of the cue stick (vx, vy)
+        
+    Returns:
+        Dict with trajectory points and collision information
+    """
+    try:
+        # Convert inputs to numpy arrays
+        cue = np.array([float(cue_pos[0]), float(cue_pos[1])])
+        target = np.array([float(target_pos[0]), float(target_pos[1])])
+        r = (float(cue_radius) + float(target_radius)) / 2  # Average radius for calculations
+        stick_vec = np.array([float(stick_direction[0]), float(stick_direction[1])])
+        
+        # Normalize stick vector
+        stick_vec = stick_vec / np.linalg.norm(stick_vec)
+        
+        # Calculate vector from cue to target
+        d_vec = target - cue
+        
+        # Project d_vec onto stick_vec
+        proj_d = np.dot(d_vec, stick_vec) * stick_vec
+        
+        # Rejection of d_vec from stick_vec (perpendicular component)
+        rej_d = d_vec - proj_d
+        
+        # Check if collision is possible
+        if np.linalg.norm(rej_d) > 2*r:
+            # No collision possible - balls will miss
+            # Just return a straight line trajectory
+            extension = 500  # Long line
+            end_point = cue + stick_vec * extension
+            
+            return {
+                'will_collide': False,
+                'cue_initial': (int(cue[0]), int(cue[1])),
+                'cue_path': [(int(cue[0]), int(cue[1])), (int(end_point[0]), int(end_point[1]))],
+                'target_path': []
+            }
+        
+        # Calculate where the cue ball would be at collision
+        mag_sub = np.sqrt(4*r*r - np.linalg.norm(rej_d)**2)
+        new_cue = cue + proj_d * (1 - mag_sub/np.linalg.norm(proj_d))
+        
+        # Calculate collision point
+        diff_vec = (target - new_cue) / (2*r)
+        diff_vec = diff_vec / np.linalg.norm(diff_vec)  # Normalize
+        collision = new_cue + diff_vec * r
+        
+        # Calculate velocity vectors after collision
+        v_target = np.dot(stick_vec, diff_vec) * diff_vec
+        v_cue = stick_vec - v_target
+        
+        # Scale vectors for visualization
+        scale_factor = 150  # Adjust this for visualization
+        v_target = v_target * scale_factor
+        v_cue = v_cue * scale_factor
+        
+        # Calculate points for drawing
+        cue_line_start = cue
+        cue_line_end = new_cue
+        
+        # Extend the lines past the collision point
+        target_line_start = collision
+        target_line_end = collision + v_target
+        
+        cue_after_start = collision
+        cue_after_end = collision + v_cue
+        
+        # Start drawing the cue stick line from the edge of the cue ball,
+        # not from its center
+        start_v_cue = r * stick_vec / np.linalg.norm(stick_vec)
+        cue_stick_start = cue + start_v_cue
+        
+        return {
+            'will_collide': True,
+            'cue_initial': (int(cue[0]), int(cue[1])),
+            'target_pos': (int(target[0]), int(target[1])),
+            'collision_point': (int(collision[0]), int(collision[1])),
+            'cue_path': [
+                (int(cue_stick_start[0]), int(cue_stick_start[1])),
+                (int(new_cue[0]), int(new_cue[1])),
+                (int(cue_after_start[0]), int(cue_after_start[1])),
+                (int(cue_after_end[0]), int(cue_after_end[1]))
+            ],
+            'target_path': [
+                (int(target_line_start[0]), int(target_line_start[1])),
+                (int(target_line_end[0]), int(target_line_end[1]))
+            ]
+        }
+    except Exception as e:
+        print(f"Error in advanced collision calculation: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def clip_line_to_bounds(start, end, bounds):
     """ Clips a line segment to stay within the given bounds. """
@@ -212,24 +318,66 @@ def process_frame(frame, detector):
         if cue_line and is_pointing_at_ball:
             vx, vy, x0, y0 = cue_line
             
-            # Calculate end point of the line (extend in cue direction)
-            end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
-            
-            # Start point is the cue ball
-            start_point = (int(x0), int(y0))
-            
-            # Draw the line
-            cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-            
             # Find the ball that the cue is pointing at (if any)
             target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
+            
+            # If no target ball is found, just draw the regular cue line
+            if not target_ball:
+                # Calculate end point of the line (extend in cue direction)
+                end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
+                
+                # Start point is the cue ball
+                start_point = (int(x0), int(y0))
+                
+                # Draw the line
+                cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
     
-    # If a target ball is found, label it
+    # If a target ball is found, label it and draw the trajectory
     if target_ball:
         center, radius, _ = target_ball
         # Draw a label for the target ball
         cv2.putText(frame, "Target Ball", (center[0] - 30, center[1] - radius - 10), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        
+        # Draw the advanced trajectory
+        if cue_ball and cue_line:
+            try:
+                vx, vy, _, _ = cue_line
+                
+                # Calculate advanced trajectories using the matplotlib physics
+                trajectories = calculate_advanced_collision(
+                    cue_ball, 
+                    center,
+                    cue_radius,
+                    radius,
+                    (vx, vy)
+                )
+                
+                if trajectories:
+                    if trajectories['will_collide']:
+                        # Draw line from cue ball to collision point (blue)
+                        cv2.line(frame, trajectories['cue_path'][0], 
+                                trajectories['cue_path'][1], (255, 0, 0), 2)
+                        
+                        # Draw cue ball trajectory after collision (green)
+                        cv2.line(frame, trajectories['cue_path'][2], 
+                                trajectories['cue_path'][3], (0, 255, 0), 2)
+                        
+                        # Draw target ball trajectory (red)
+                        cv2.line(frame, trajectories['target_path'][0], 
+                                trajectories['target_path'][1], (0, 0, 255), 2)
+                        
+                        # Mark collision point
+                        cv2.circle(frame, trajectories['collision_point'], 3, (0, 255, 255), -1)
+                    else:
+                        # No collision - just draw the straight path
+                        cv2.line(frame, trajectories['cue_path'][0], 
+                                trajectories['cue_path'][1], (255, 0, 0), 2)
+                    
+            except Exception as e:
+                print(f"Error drawing trajectories: {e}")
+                import traceback
+                traceback.print_exc()
     
     return frame
 

@@ -128,6 +128,9 @@ def process_frame(frame, detector):
     # Also detect colored balls separately (as a fallback)
     colored_balls = detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball)
     
+    # Store detected ball information
+    all_detected_balls = []
+    
     # Mark all balls detected by Hough Circles (this should work better)
     if circles is not None:
         circles = np.uint16(np.around(circles))
@@ -158,7 +161,7 @@ def process_frame(frame, detector):
                 # Draw circle around the ball
                 cv2.circle(frame, center, radius, (0, 0, 255), 2)
                 
-                # Determine color (optional)
+                # Determine color
                 ball_mask = np.zeros(original_frame.shape[:2], dtype=np.uint8)
                 cv2.circle(ball_mask, center, radius, 255, -1)
                 
@@ -167,8 +170,9 @@ def process_frame(frame, detector):
                 if np.sum(ball_mask) > 0:
                     mean_color = np.mean(masked_hsv[ball_mask > 0], axis=0).astype(int)
                     color_name = get_color_name(mean_color)
-                    #cv2.putText(frame, color_name, (center[0] - 20, center[1] - 20), 
-                    #            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    
+                    # Store ball information
+                    all_detected_balls.append((center, radius, color_name))
     
     # Draw any colored balls from our separate detection (as a backup)
     # This helps ensure we don't miss any balls
@@ -186,12 +190,16 @@ def process_frame(frame, detector):
             # Draw circle around the ball
             cv2.circle(frame, ball_center, ball_radius, (0, 0, 255), 2)
             
-            # Display ball color (optional)
-            #color_name = get_color_name(ball_color)
-            #cv2.putText(frame, color_name, (ball_center[0] - 20, ball_center[1] - 20), 
-            #            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            # Get color name
+            color_name = get_color_name(ball_color)
+            
+            # Store ball information
+            all_detected_balls.append((ball_center, ball_radius, color_name))
     
-    # Draw the cue ball
+    # Initialize target ball
+    target_ball = None
+    
+    # Draw the cue ball and detect cue orientation
     if cue_ball:
         cv2.circle(frame, cue_ball, cue_radius, (0, 255, 0), 2)
         cv2.putText(frame, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), 
@@ -207,14 +215,69 @@ def process_frame(frame, detector):
             # Calculate end point of the line (extend in cue direction)
             end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
             
-            # Clip the line to stay within ArUco marker bounds
-            #start_point, clipped_end_point = clip_line_to_bounds((int(x0), int(y0)), end_point, bounds)
+            # Start point is the cue ball
             start_point = (int(x0), int(y0))
             
-            # Draw the clipped line
+            # Draw the line
             cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
+            
+            # Find the ball that the cue is pointing at (if any)
+            target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
+    
+    # If a target ball is found, label it
+    if target_ball:
+        center, radius, _ = target_ball
+        # Draw a label for the target ball
+        cv2.putText(frame, "Target Ball", (center[0] - 30, center[1] - radius - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
     
     return frame
+
+def find_target_ball(cue_ball, cue_line, all_balls):
+    """
+    Find the ball that the cue is pointing at.
+    Returns the ball information (center, radius, color) or None if no ball is targeted.
+    """
+    if cue_ball is None or cue_line is None or not all_balls:
+        return None
+    
+    vx, vy, x0, y0 = cue_line
+    cue_x, cue_y = cue_ball
+    
+    closest_ball = None
+    min_distance = float('inf')
+    min_ball_distance = float('inf')
+    
+    for ball_info in all_balls:
+        center, radius, color = ball_info
+        ball_x, ball_y = center
+        
+        # Calculate perpendicular distance from ball center to cue line
+        # The line is defined by: (x0, y0) and direction (vx, vy)
+        # Avoid division by zero
+        if vx == 0:
+            # Vertical line
+            perp_distance = abs(ball_x - x0)
+        else:
+            # Distance from point to line formula
+            perp_distance = abs(vy*(ball_x - x0) - vx*(ball_y - y0)) / np.sqrt(vx*vx + vy*vy)
+        
+        # Calculate distance from cue ball to this ball
+        ball_distance = distance(cue_ball, center)
+        
+        # Check if the ball is in front of the cue ball (not behind)
+        # Calculate the dot product of the vector from cue to ball and the cue direction
+        ball_vector = [ball_x - cue_x, ball_y - cue_y]
+        direction_vector = [vx, vy]
+        dot_product = ball_vector[0]*direction_vector[0] + ball_vector[1]*direction_vector[1]
+        
+        # If the ball is in front of the cue and close enough to the line
+        if dot_product > 0 and perp_distance < radius + 5:  # Adding a small tolerance
+            if ball_distance < min_ball_distance:
+                min_ball_distance = ball_distance
+                closest_ball = ball_info
+    
+    return closest_ball
 
 def detect_aruco_markers(frame, detector):
     global LOCKED_BOUNDS, LOCKED_TABLE_MASK
@@ -498,74 +561,6 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
         return (vx, vy, cue_x, cue_y), is_pointing_at_ball
         
     return None, False
-
-
-def find_intersecting_ball(frame, cue_line, aruco_mask, table_mask=None):
-    if cue_line is None:
-        return None
-        
-    vx, vy, x0, y0 = cue_line
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # Create a mask for all colored balls (excluding white)
-    # You may need to adjust these values based on your pool table and lighting
-    lower_color = np.array([0, 50, 50])
-    upper_color = np.array([180, 255, 255])
-    mask = cv2.inRange(hsv, lower_color, upper_color)
-    
-    # Exclude the white ball from consideration
-    lower_white, upper_white = np.array([0, 0, 200]), np.array([180, 30, 255])
-    white_mask = cv2.inRange(hsv, lower_white, upper_white)
-    mask = cv2.bitwise_and(mask, cv2.bitwise_not(white_mask))
-    
-    # Apply the ArUco mask to exclude those regions
-    mask = cv2.bitwise_and(mask, aruco_mask)
-    
-    # Find contours of the colored balls
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    min_distance = float('inf')
-    closest_ball = None
-    
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < 500:  # Filter out small contours
-            continue
-            
-        ((x, y), radius) = cv2.minEnclosingCircle(contour)
-        
-        # Check for circularity (to ensure we're detecting balls, not arbitrary shapes)
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter > 0:
-            circularity = 4 * np.pi * area / (perimeter * perimeter)
-            if circularity < 0.7:  # Not circular enough
-                continue
-        
-        if radius > 10:  # Filter small contours
-            # Calculate the distance from the line to the center of the ball
-            # The line equation is: (y - y0) / (x - x0) = vy / vx
-            # Reorganizing: vy*(x - x0) - vx*(y - y0) = 0
-            
-            # Avoid division by zero
-            if vx == 0:
-                # Vertical line
-                dist = abs(x - x0)
-            else:
-                # Distance from point to line formula
-                dist = abs(vy*(x - x0) - vx*(y - y0)) / np.sqrt(vx*vx + vy*vy)
-            
-            # Check if the ball is in front of the cue ball (not behind)
-            # Calculate the dot product of the vector from cue to ball and the cue direction
-            ball_vector = [x - x0, y - y0]
-            direction_vector = [vx, vy]
-            dot_product = ball_vector[0]*direction_vector[0] + ball_vector[1]*direction_vector[1]
-            
-            # If the ball is in front of the cue and close to the line
-            if dot_product > 0 and dist < radius and dist < min_distance:
-                min_distance = dist
-                closest_ball = (int(x), int(y))
-    
-    return closest_ball
 
 if __name__ == "__main__":
     main()

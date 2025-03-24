@@ -84,6 +84,7 @@ def main():
             output_writer.release()
         cv2.destroyAllWindows()
 
+# Fix for "stick_vec = np.array([float(stick_direction[0]), float(stick_direction[1])])" warning
 def calculate_advanced_collision(cue_pos, target_pos, cue_radius, target_radius, stick_direction):
     """
     Calculate advanced collision trajectories between cue ball and target ball
@@ -100,11 +101,15 @@ def calculate_advanced_collision(cue_pos, target_pos, cue_radius, target_radius,
         Dict with trajectory points and collision information
     """
     try:
+        # Extract scalar values from stick_direction if it's an array
+        vx = float(stick_direction[0]) if hasattr(stick_direction[0], '__len__') else float(stick_direction[0])
+        vy = float(stick_direction[1]) if hasattr(stick_direction[1], '__len__') else float(stick_direction[1])
+        
         # Convert inputs to numpy arrays
         cue = np.array([float(cue_pos[0]), float(cue_pos[1])])
         target = np.array([float(target_pos[0]), float(target_pos[1])])
         r = (float(cue_radius) + float(target_radius)) / 2  # Average radius for calculations
-        stick_vec = np.array([float(stick_direction[0]), float(stick_direction[1])])
+        stick_vec = np.array([vx, vy])
         
         # Normalize stick vector
         stick_vec = stick_vec / np.linalg.norm(stick_vec)
@@ -206,6 +211,7 @@ def clip_line_to_bounds(start, end, bounds):
     
     return tuple(start), tuple(clipped_end)
 
+# Modified process_frame function to use the fixed functions
 def process_frame(frame, detector):
     # Make a copy of the original frame for clean visualization
     original_frame = frame.copy()
@@ -324,13 +330,14 @@ def process_frame(frame, detector):
             # If no target ball is found, just draw the regular cue line
             if not target_ball:
                 # Calculate end point of the line (extend in cue direction)
+                # Using scalar values to avoid deprecation warning
                 end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
                 
                 # Start point is the cue ball
                 start_point = (int(x0), int(y0))
                 
                 # Draw the line
-                cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
+                cv2.line(frame, start_point, end_point, (255, 255, 255), 2)  # White line
     
     # If a target ball is found, label it and draw the trajectory
     if target_ball:
@@ -355,24 +362,24 @@ def process_frame(frame, detector):
                 
                 if trajectories:
                     if trajectories['will_collide']:
-                        # Draw line from cue ball to collision point (blue)
+                        # Draw line from cue stick to collision point (white)
                         cv2.line(frame, trajectories['cue_path'][0], 
-                                trajectories['cue_path'][1], (255, 0, 0), 2)
+                                trajectories['collision_point'], (255, 255, 255), 2)
                         
-                        # Draw cue ball trajectory after collision (green)
-                        cv2.line(frame, trajectories['cue_path'][2], 
-                                trajectories['cue_path'][3], (0, 255, 0), 2)
+                        # Draw cue ball trajectory after collision (white)
+                        cv2.line(frame, trajectories['collision_point'], 
+                                trajectories['cue_path'][3], (255, 255, 255), 2)
                         
-                        # Draw target ball trajectory (red)
-                        cv2.line(frame, trajectories['target_path'][0], 
-                                trajectories['target_path'][1], (0, 0, 255), 2)
+                        # Draw target ball trajectory (white)
+                        cv2.line(frame, trajectories['collision_point'], 
+                                trajectories['target_path'][1], (255, 255, 255), 2)
                         
                         # Mark collision point
                         cv2.circle(frame, trajectories['collision_point'], 3, (0, 255, 255), -1)
                     else:
                         # No collision - just draw the straight path
                         cv2.line(frame, trajectories['cue_path'][0], 
-                                trajectories['cue_path'][1], (255, 0, 0), 2)
+                                trajectories['cue_path'][1], (255, 255, 255), 2)
                     
             except Exception as e:
                 print(f"Error drawing trajectories: {e}")
@@ -680,24 +687,31 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
         
         # Fit a line to the silver contour (cue stick)
         [vx, vy, x, y] = cv2.fitLine(largest_contour, cv2.DIST_L2, 0, 0.01, 0.01)
-        vx, vy = -vx, -vy  # Invert direction by 180 degrees
+        
+        # Extract scalar values from single-element arrays
+        vx_scalar = float(vx[0])
+        vy_scalar = float(vy[0])
+        x_scalar = float(x[0])
+        y_scalar = float(y[0])
+        
+        # Invert direction by 180 degrees
+        vx_scalar, vy_scalar = -vx_scalar, -vy_scalar
         
         # Get the cue ball position
         cue_x, cue_y = cue_ball
         
-        # Check if the cue is pointing at the ball
         # Calculate distance from cue line to ball center
         # The cue line starts at (x,y) and goes in direction (vx,vy)
         
         # Project vector from cue line point to ball onto the perpendicular to the cue direction
-        perp_x, perp_y = -vy, vx  # Perpendicular to (vx, vy)
-        vec_to_ball_x, vec_to_ball_y = cue_x - x, cue_y - y
+        perp_x, perp_y = -vy_scalar, vx_scalar  # Perpendicular to (vx, vy)
+        vec_to_ball_x, vec_to_ball_y = cue_x - x_scalar, cue_y - y_scalar
         
         # Distance from line to point
         distance = abs(vec_to_ball_x * perp_x + vec_to_ball_y * perp_y) / np.sqrt(perp_x**2 + perp_y**2)
         
         # Check if ball is ahead of the cue, not behind
-        dot_product = vec_to_ball_x * vx + vec_to_ball_y * vy
+        dot_product = vec_to_ball_x * vx_scalar + vec_to_ball_y * vy_scalar
         is_ahead = dot_product > 0
         
         # Maximum allowed distance (can be adjusted based on ball radius and tolerance)
@@ -706,7 +720,7 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
         is_pointing_at_ball = is_ahead and distance < max_distance
         
         # Return the line parameters (direction and origin) and whether it's pointing at the ball
-        return (vx, vy, cue_x, cue_y), is_pointing_at_ball
+        return (vx_scalar, vy_scalar, cue_x, cue_y), is_pointing_at_ball
         
     return None, False
 

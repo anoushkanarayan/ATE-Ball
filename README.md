@@ -7,7 +7,7 @@ python [filename].py --projection --video [video].mp4      // filename is single
 
 Options:
 
---projection: Enable the line projection system 
+--projection: Enable the line projection system *ALWAYS*
 --video PATH: Specify a video file to process instead of using a camera
 --camera INDEX: Specify which camera to use (default: 1)
 --output PATH: Save the processed video to a file

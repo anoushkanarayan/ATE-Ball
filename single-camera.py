@@ -41,6 +41,9 @@ class LineProjectionSystem:
         # Flag to control processing loop
         self.running = True
         
+        # Flag to indicate if we have lines to display
+        self.has_lines = False
+        
         # OpenCV window name for projection view
         self.window_name = "Projection View"
         
@@ -48,6 +51,8 @@ class LineProjectionSystem:
         """Update detected lines with thread lock."""
         with self.lock:
             self.detected_lines = lines.copy() if lines else []
+            # Set flag based on whether we have lines
+            self.has_lines = len(self.detected_lines) > 0
             
     def update_plot(self, frame_num):
         """Update function for matplotlib animation."""
@@ -60,11 +65,14 @@ class LineProjectionSystem:
         # Get current detected lines with thread lock
         with self.lock:
             current_lines = self.detected_lines.copy()
+            has_lines = self.has_lines
             
-        # Draw each line
-        for x1, y1, x2, y2 in current_lines:
-            line, = self.ax.plot([x1, x2], [y1, y2], color='white', linewidth=3)
-            self.lines.append(line)
+        # Only draw lines if we have lines to display
+        if has_lines:
+            # Draw each line
+            for x1, y1, x2, y2 in current_lines:
+                line, = self.ax.plot([x1, x2], [y1, y2], color='white', linewidth=3)
+                self.lines.append(line)
             
         # Update shared data if needed
         if 'frame_ready' in self.shared_data:
@@ -84,16 +92,25 @@ class LineProjectionSystem:
         # Get current detected lines with thread lock
         with self.lock:
             current_lines = self.detected_lines.copy()
+            has_lines = self.has_lines
         
-        # Draw each line in white
-        for x1, y1, x2, y2 in current_lines:
-            cv2.line(projection_frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
+        # Only draw lines if we have lines to display
+        if has_lines:
+            # Draw each line in white
+            for x1, y1, x2, y2 in current_lines:
+                cv2.line(projection_frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
             
         return projection_frame
         
     def run_opencv_display(self):
         """Run OpenCV-based display for projection."""
+        # Set window properties for same size as video window
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        
+        # Get the frame size from shared data if available
+        if 'frame_size' in self.shared_data:
+            width, height = self.shared_data['frame_size']
+            cv2.resizeWindow(self.window_name, width, height)
         
         while self.running:
             # Create projection frame
@@ -114,6 +131,14 @@ class LineProjectionSystem:
         
     def run_matplotlib_display(self):
         """Run Matplotlib-based display for projection."""
+        # If we have frame size info, use it to set the figure size
+        if 'frame_size' in self.shared_data:
+            width, height = self.shared_data['frame_size']
+            # Convert to inches (assuming 100 pixels per inch)
+            width_inches = width / 100
+            height_inches = height / 100
+            self.fig.set_size_inches(width_inches, height_inches)
+        
         # Start matplotlib animation for projection display
         self.ani = FuncAnimation(
             self.fig, 

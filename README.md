@@ -5,11 +5,14 @@ This repository contains the code for the 2024-2025 USC Makers project, ATE Ball
 How To Use
 
 With projection enabled
+
 python projection.py --projection
 
 Save the output to a video file
+
 python projection.py --output output.avi
 
 Use a video file for testing
+
 python projection.py --video briannaYUH.mp4
 

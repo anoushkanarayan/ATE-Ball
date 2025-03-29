@@ -974,11 +974,9 @@ def create_stitched_view(frame1, frame2, homography):
     return stitched
 
 def main():
-    """Main function for the Dual Camera Pool Table Stitcher with Projection."""
-    print("Starting Dual Camera Pool Table Stitcher with Projection...")
-    
+    """Main function for the Pool Table Tracker with Projection."""
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Dual Camera Pool Table Stitcher with Projection')
+    parser = argparse.ArgumentParser(description='Pool Table Tracker with Projection')
     parser.add_argument('--video', type=str, default='', help='Path to video file')
     parser.add_argument('--cam1', type=int, default=0, help='First camera index (default: 0)')
     parser.add_argument('--cam2', type=int, default=2, help='Second camera index (default: 2)')
@@ -987,12 +985,19 @@ def main():
     parser.add_argument('--use-matplotlib', action='store_true', help='Use Matplotlib for projection')
     parser.add_argument('--no-stitch', action='store_true', help='Disable stitching, show side-by-side')
     args = parser.parse_args()
+    
+    if args.video:
+        print("Starting Pool Table Tracker with Projection using video...")
+    else:
+        print("Starting Dual Camera Pool Table Stitcher with Projection...")
+    
+
 
     # Initialize video capture
     if args.video:
-        # Use the same video for both cameras when testing
+        # When using a video file, treat it as a single camera input
         cap1 = cv2.VideoCapture(args.video)
-        cap2 = cv2.VideoCapture(args.video)
+        cap2 = None  # No second camera when using video
         print(f"Reading from video file: {args.video}")
     else:
         # Use two separate cameras
@@ -1000,37 +1005,47 @@ def main():
         cap2 = cv2.VideoCapture(args.cam2, cv2.CAP_DSHOW)
         print(f"Reading from cameras: {args.cam1} and {args.cam2}")
     
-    # Check if cameras opened successfully
+    # Check if camera/video opened successfully
     if not cap1.isOpened():
-        print(f"Error: Could not open first camera (index {args.cam1}).")
+        print(f"Error: Could not open first camera/video file.")
         return
     
-    if not cap2.isOpened():
+    # Only check the second camera if not using video
+    if not args.video and not cap2.isOpened():
         print(f"Error: Could not open second camera (index {args.cam2}).")
         return
     
     # Get video properties
     frame_width1 = int(cap1.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height1 = int(cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_width2 = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height2 = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Combined dimensions
-    if args.no_stitch:
-        # Side-by-side view
-        combined_width = frame_width1 + frame_width2
-        combined_height = max(frame_height1, frame_height2)
-    else:
-        # Stitched view - approximately 1.5x the width of one camera
-        combined_width = int(frame_width1 * 1.5)
+    if args.video:
+        # For video mode, just use the dimensions of the video
+        combined_width = frame_width1
         combined_height = frame_height1
+    else:
+        # Get second camera properties
+        frame_width2 = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height2 = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Combined dimensions for dual camera setup
+        if args.no_stitch:
+            # Side-by-side view
+            combined_width = frame_width1 + frame_width2
+            combined_height = max(frame_height1, frame_height2)
+        else:
+            # Stitched view - approximately 1.5x the width of one camera
+            combined_width = int(frame_width1 * 1.5)
+            combined_height = frame_height1
     
     # Estimated pool table dimensions (for projection)
     table_width = combined_width
     table_height = combined_height
     
     # FPS
-    fps = max(cap1.get(cv2.CAP_PROP_FPS), cap2.get(cv2.CAP_PROP_FPS))
+    fps = cap1.get(cv2.CAP_PROP_FPS)
+    if not args.video:
+        fps = max(fps, cap2.get(cv2.CAP_PROP_FPS))
     if fps == 0:
         fps = 30
     
@@ -1060,63 +1075,77 @@ def main():
         print("Line Projection System initialized.")
     
     # Create windows
-    cv2.namedWindow("Camera Views", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Camera Views", combined_width, combined_height)
+    if args.video:
+        window_title = "Pool Tracker - Video"
+    else:
+        window_title = "Dual Camera Pool Tracker"
+    
+    cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_title, combined_width, combined_height)
     
     # Variable to store homography matrix
     homography = None
     
     try:
         while True:
-            # Read frames
+            # Read first frame/camera
             ret1, frame1 = cap1.read()
-            ret2, frame2 = cap2.read()
-            
-            if not ret1 or not ret2:
+            if not ret1:
                 print("End of video or failed to grab frames.")
                 break
             
-            # Process frames
+            # Process first frame
             processed_frame1, markers1, balls1, trajectories1 = process_frame(
                 frame1, detector, 0, None, projection_system
             )
             
-            processed_frame2, markers2, balls2, trajectories2 = process_frame(
-                frame2, detector, 1, homography, projection_system
-            )
-            
-            # Compute homography if enough markers are detected
-            if markers1 and markers2:
-                homography = compute_stitching_homography(markers1, markers2)
-            
-            # Create output frame
-            if args.no_stitch or homography is None:
-                # Side-by-side view
-                max_height = max(frame_height1, frame_height2)
-                
-                # Resize frames to have the same height
-                scale1 = max_height / frame_height1
-                scale2 = max_height / frame_height2
-                
-                new_width1 = int(frame_width1 * scale1)
-                new_width2 = int(frame_width2 * scale2)
-                
-                resized_frame1 = cv2.resize(processed_frame1, (new_width1, max_height))
-                resized_frame2 = cv2.resize(processed_frame2, (new_width2, max_height))
-                
-                # Combine side by side
-                combined_frame = np.zeros((max_height, new_width1 + new_width2, 3), dtype=np.uint8)
-                combined_frame[:, :new_width1] = resized_frame1
-                combined_frame[:, new_width1:] = resized_frame2
-                
-                # Draw dividing line
-                cv2.line(combined_frame, (new_width1, 0), (new_width1, max_height), (0, 255, 255), 2)
+            if args.video:
+                # In video mode, just use the single processed frame
+                combined_frame = processed_frame1
             else:
-                # Create stitched view
-                combined_frame = create_stitched_view(processed_frame1, processed_frame2, homography)
+                # In dual camera mode, read and process second camera
+                ret2, frame2 = cap2.read()
+                if not ret2:
+                    print("Failed to grab frame from second camera.")
+                    break
+                
+                # Process second frame
+                processed_frame2, markers2, balls2, trajectories2 = process_frame(
+                    frame2, detector, 1, homography, projection_system
+                )
+                
+                # Compute homography if enough markers are detected
+                if markers1 and markers2:
+                    homography = compute_stitching_homography(markers1, markers2)
+                
+                # Create output frame
+                if args.no_stitch or homography is None:
+                    # Side-by-side view
+                    max_height = max(frame_height1, frame_height2)
+                    
+                    # Resize frames to have the same height
+                    scale1 = max_height / frame_height1
+                    scale2 = max_height / frame_height2
+                    
+                    new_width1 = int(frame_width1 * scale1)
+                    new_width2 = int(frame_width2 * scale2)
+                    
+                    resized_frame1 = cv2.resize(processed_frame1, (new_width1, max_height))
+                    resized_frame2 = cv2.resize(processed_frame2, (new_width2, max_height))
+                    
+                    # Combine side by side
+                    combined_frame = np.zeros((max_height, new_width1 + new_width2, 3), dtype=np.uint8)
+                    combined_frame[:, :new_width1] = resized_frame1
+                    combined_frame[:, new_width1:] = resized_frame2
+                    
+                    # Draw dividing line
+                    cv2.line(combined_frame, (new_width1, 0), (new_width1, max_height), (0, 255, 255), 2)
+                else:
+                    # Create stitched view
+                    combined_frame = create_stitched_view(processed_frame1, processed_frame2, homography)
             
             # Display frame
-            cv2.imshow("Camera Views", combined_frame)
+            cv2.imshow(window_title, combined_frame)
             
             # Write frame to output
             if output_writer is not None:
@@ -1144,7 +1173,8 @@ def main():
     finally:
         # Clean up
         cap1.release()
-        cap2.release()
+        if cap2 is not None:
+            cap2.release()
         
         if output_writer is not None:
             output_writer.release()
@@ -1153,7 +1183,10 @@ def main():
             projection_system.stop()
         
         cv2.destroyAllWindows()
-        print("Dual Camera Pool Table Stitcher stopped.")
+        if args.video:
+            print("Pool Tracker stopped.")
+        else:
+            print("Dual Camera Pool Table Stitcher stopped.")
 
 if __name__ == "__main__":
     main()

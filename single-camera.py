@@ -7,8 +7,10 @@ from matplotlib.animation import FuncAnimation
 import time
 
 # Global variables to track state
-LOCKED_BOUNDS = None
-LOCKED_TABLE_MASK = None
+LOCKED_BOUNDS = [None, None]  # One for each camera
+LOCKED_TABLE_MASK = [None, None]  # One for each camera
+STITCHING_HOMOGRAPHY = None  # Homography matrix for stitching camera views
+SHARED_MARKERS = []  # ArUco markers visible in both camera feeds
 
 class LineProjectionSystem:
     def __init__(self, shared_data=None):
@@ -19,12 +21,22 @@ class LineProjectionSystem:
             shared_data: A dictionary to share data with the main application
         """
         # Create matplotlib figure for projection
-        self.fig, self.ax = plt.subplots(figsize=(8, 6))
+        self.fig, self.ax = plt.subplots(figsize=(12, 6))
         self.ax.set_facecolor('black')  # Set axis background to black
         self.fig.patch.set_facecolor('black')  # Set figure background to black
-        self.ax.set_xlim(0, 640)
-        self.ax.set_ylim(480, 0)  # Invert Y-axis to match OpenCV coordinates
+        
+        # Get the table dimensions from shared data if available
+        self.table_width = 1280
+        self.table_height = 640
+        if shared_data and 'table_dimensions' in shared_data:
+            self.table_width, self.table_height = shared_data['table_dimensions']
+            
+        self.ax.set_xlim(0, self.table_width)
+        self.ax.set_ylim(self.table_height, 0)  # Invert Y-axis to match OpenCV coordinates
         self.ax.set_axis_off()  # Hide axis
+        
+        # Draw table boundaries
+        self.draw_table_boundaries()
         
         # Initialize line collections for visualization
         self.lines = []
@@ -46,6 +58,13 @@ class LineProjectionSystem:
         
         # OpenCV window name for projection view
         self.window_name = "Projection View"
+        
+    def draw_table_boundaries(self):
+        """Draw the boundaries of the pool table."""
+        # Draw a rectangle representing the pool table
+        self.table_rect = plt.Rectangle((0, 0), self.table_width, self.table_height, 
+                               fill=False, edgecolor='forestgreen', linewidth=2)
+        self.ax.add_patch(self.table_rect)
         
     def update_lines(self, lines):
         """Update detected lines with thread lock."""
@@ -80,14 +99,14 @@ class LineProjectionSystem:
             
         return self.lines
     
-    def create_projection_frame(self, frame_size=(640, 480)):
+    def create_projection_frame(self):
         """Create a projection frame with detected lines."""
-        # Get frame size from shared data or use default
-        if 'frame_size' in self.shared_data:
-            frame_size = self.shared_data['frame_size']
-            
-        # Create a black frame
-        projection_frame = np.zeros((frame_size[1], frame_size[0], 3), dtype=np.uint8)
+        # Create a black frame with the same dimensions as the table
+        projection_frame = np.zeros((self.table_height, self.table_width, 3), dtype=np.uint8)
+        
+        # Draw a green rectangle for the table boundary
+        cv2.rectangle(projection_frame, (0, 0), (self.table_width, self.table_height), 
+                      (0, 100, 0), 2)
         
         # Get current detected lines with thread lock
         with self.lock:
@@ -98,19 +117,16 @@ class LineProjectionSystem:
         if has_lines:
             # Draw each line in white
             for x1, y1, x2, y2 in current_lines:
-                cv2.line(projection_frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
+                cv2.line(projection_frame, (int(x1), int(y1)), (int(x2), int(y2)), 
+                         (255, 255, 255), 5)
             
         return projection_frame
         
     def run_opencv_display(self):
         """Run OpenCV-based display for projection."""
-        # Set window properties for same size as video window
+        # Set window properties
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        
-        # Get the frame size from shared data if available
-        if 'frame_size' in self.shared_data:
-            width, height = self.shared_data['frame_size']
-            cv2.resizeWindow(self.window_name, width, height)
+        cv2.resizeWindow(self.window_name, self.table_width, self.table_height)
         
         while self.running:
             # Create projection frame
@@ -131,14 +147,6 @@ class LineProjectionSystem:
         
     def run_matplotlib_display(self):
         """Run Matplotlib-based display for projection."""
-        # If we have frame size info, use it to set the figure size
-        if 'frame_size' in self.shared_data:
-            width, height = self.shared_data['frame_size']
-            # Convert to inches (assuming 100 pixels per inch)
-            width_inches = width / 100
-            height_inches = height / 100
-            self.fig.set_size_inches(width_inches, height_inches)
-        
         # Start matplotlib animation for projection display
         self.ani = FuncAnimation(
             self.fig, 
@@ -179,32 +187,53 @@ class LineProjectionSystem:
         self.stop()
 
 # Helper function to extract lines from trajectories
-def extract_lines_from_trajectories(trajectories):
-    """Extract line segments from trajectory data."""
+def extract_lines_from_trajectories(trajectories, transform_matrix=None):
+    """
+    Extract line segments from trajectory data.
+    
+    Args:
+        trajectories: Dictionary containing trajectory data
+        transform_matrix: Optional homography matrix to transform points
+        
+    Returns:
+        List of line segments as (x1, y1, x2, y2) tuples
+    """
     lines = []
     
     if not trajectories:
         return lines
     
+    def transform_point(point):
+        """Transform a point using the homography matrix if provided."""
+        if transform_matrix is not None:
+            # Convert to homogeneous coordinates
+            p = np.array([[point[0], point[1], 1]], dtype=np.float32).T
+            # Apply transformation
+            p_transformed = np.dot(transform_matrix, p)
+            # Convert back from homogeneous coordinates
+            return (int(p_transformed[0]/p_transformed[2]), 
+                    int(p_transformed[1]/p_transformed[2]))
+        return point
+    
     if trajectories.get('will_collide', False):
         # Cue stick to collision point
-        start = trajectories['cue_path'][0]
-        end = trajectories['collision_point']
+        start = transform_point(trajectories['cue_path'][0])
+        end = transform_point(trajectories['collision_point'])
         lines.append((start[0], start[1], end[0], end[1]))
         
         # Cue ball after collision
-        start = trajectories['collision_point'] 
-        end = trajectories['cue_path'][3]
+        start = transform_point(trajectories['collision_point']) 
+        end = transform_point(trajectories['cue_path'][3])
         lines.append((start[0], start[1], end[0], end[1]))
         
         # Target ball trajectory
-        start = trajectories['collision_point']
-        end = trajectories['target_path'][1]
+        start = transform_point(trajectories['collision_point'])
+        end = transform_point(trajectories['target_path'][1])
         lines.append((start[0], start[1], end[0], end[1]))
     else:
         # No collision - just the straight path
-        start = trajectories['cue_path'][0]
-        end = trajectories['cue_path'][1]
+        start = transform_point(trajectories['cue_path'][0])
+        end = transform_point(trajectories['cue_path'][1])
         lines.append((start[0], start[1], end[0], end[1]))
     
     return lines
@@ -212,7 +241,7 @@ def extract_lines_from_trajectories(trajectories):
 def calculate_advanced_collision(cue_pos, target_pos, cue_radius, target_radius, stick_direction):
     """
     Calculate advanced collision trajectories between cue ball and target ball
-    using the physics from the matplotlib example.
+    using physics equations.
     
     Args:
         cue_pos: Position of the cue ball as (x, y)
@@ -321,141 +350,252 @@ def distance(point1, point2):
     """Calculate Euclidean distance between two points."""
     return np.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
 
-def detect_aruco_markers(frame, detector):
-    """Detect ArUco markers in the frame and return the frame with markers highlighted,
-    an ArUco mask, table bounds, and table mask."""
-    global LOCKED_BOUNDS, LOCKED_TABLE_MASK
+def detect_aruco_markers(frame, detector, camera_index=0):
+    """
+    Detect ArUco markers in the frame.
+    
+    Args:
+        frame: Input frame
+        detector: ArUco marker detector
+        camera_index: Index of the camera (0 or 1)
+        
+    Returns:
+        Tuple of (annotated frame, ArUco mask, table bounds, table mask, marker data)
+    """
+    global LOCKED_BOUNDS, LOCKED_TABLE_MASK, SHARED_MARKERS
+    
+    # If we have locked bounds and mask for this camera, use them
+    if LOCKED_BOUNDS[camera_index] is not None and LOCKED_TABLE_MASK[camera_index] is not None:
+        # Still detect markers for stitching purposes
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        markerCorners, markerIds, _ = detector.detectMarkers(gray)
+        
+        marker_data = []
+        if markerIds is not None:
+            # Draw the detected markers
+            frame = cv2.aruco.drawDetectedMarkers(frame, markerCorners, markerIds)
+            
+            # Store marker data for stitching
+            for i, (corners, marker_id) in enumerate(zip(markerCorners, markerIds)):
+                corners = corners.reshape((4, 2)).astype(int)
+                # Calculate center of marker
+                center_x = int(np.mean([c[0] for c in corners]))
+                center_y = int(np.mean([c[1] for c in corners]))
+                
+                marker_data.append({
+                    'id': int(marker_id[0]),
+                    'corners': corners,
+                    'center': (center_x, center_y)
+                })
+        
+        return (frame, 
+                np.ones(frame.shape[:2], dtype=np.uint8) * 255, 
+                LOCKED_BOUNDS[camera_index], 
+                LOCKED_TABLE_MASK[camera_index],
+                marker_data)
 
-    if LOCKED_BOUNDS is not None and LOCKED_TABLE_MASK is not None:
-        return frame, np.ones(frame.shape[:2], dtype=np.uint8) * 255, LOCKED_BOUNDS, LOCKED_TABLE_MASK
-
+    # Convert to grayscale
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Detect ArUco markers
     markerCorners, markerIds, _ = detector.detectMarkers(gray)
-
-    aruco_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255  # Default mask
-
+    
+    # Default mask and bounds
+    aruco_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
+    
+    # Default bounds - whole frame
+    bounds = (0, 0, frame.shape[1], frame.shape[0])
+    
+    # Default table mask - whole frame
+    table_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
+    
+    # Store marker data for stitching
+    marker_data = []
+    
     if markerIds is not None:
+        # Draw the detected markers
+        frame = cv2.aruco.drawDetectedMarkers(frame, markerCorners, markerIds)
+        
         all_corners = []
-        for corners, marker_id in zip(markerCorners, markerIds):
+        for i, (corners, marker_id) in enumerate(zip(markerCorners, markerIds)):
             corners = corners.reshape((4, 2)).astype(int)
             all_corners.extend(corners)
-
-            # Draw the ArUco markers
-            cv2.polylines(frame, [corners], isClosed=True, color=(0, 255, 0), thickness=2)
-            cv2.putText(frame, f"ID: {marker_id[0]}", (corners[0][0], corners[0][1] - 10),
+            
+            # Calculate center of marker
+            center_x = int(np.mean([c[0] for c in corners]))
+            center_y = int(np.mean([c[1] for c in corners]))
+            
+            # Add marker data
+            marker_data.append({
+                'id': int(marker_id[0]),
+                'corners': corners,
+                'center': (center_x, center_y)
+            })
+            
+            # Draw marker ID
+            cv2.putText(frame, f"ID: {marker_id[0]}", (center_x - 20, center_y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-        if all_corners:
-            x_min = min([c[0] for c in all_corners])
-            y_min = min([c[1] for c in all_corners])
-            x_max = max([c[0] for c in all_corners])
-            y_max = max([c[1] for c in all_corners])
-            bounds = (x_min, y_min, x_max, y_max)
-
-            table_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-            if len(all_corners) >= 4:
-                hull = cv2.convexHull(np.array(all_corners))
-                cv2.fillPoly(table_mask, [hull], 255)
-                cv2.polylines(frame, [hull], isClosed=True, color=(0, 255, 255), thickness=1)
-            else:
-                table_points = np.array([[x_min, y_min], [x_max, y_min], 
-                                         [x_max, y_max], [x_min, y_max]])
-                cv2.fillPoly(table_mask, [table_points], 255)
-                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 1)
-
-            # Lock in detected values
-            LOCKED_BOUNDS = bounds
-            LOCKED_TABLE_MASK = table_mask
-
-            return frame, aruco_mask, bounds, table_mask
-
-# If detection fails and bounds are locked, return stored values
-    if LOCKED_BOUNDS is not None and LOCKED_TABLE_MASK is not None:
-        return frame, aruco_mask, LOCKED_BOUNDS, LOCKED_TABLE_MASK
         
-    # Default fallback case
-    return frame, aruco_mask, (0, 0, frame.shape[1], frame.shape[0]), np.ones(frame.shape[:2], dtype=np.uint8) * 255
+        if all_corners:
+            # Estimate table bounds using convex hull of markers
+            x_min = max(0, min([c[0] for c in all_corners]))
+            y_min = max(0, min([c[1] for c in all_corners]))
+            x_max = min(frame.shape[1], max([c[0] for c in all_corners]))
+            y_max = min(frame.shape[0], max([c[1] for c in all_corners]))
+            
+            # Add some margin
+            margin = 20
+            x_min = max(0, x_min - margin)
+            y_min = max(0, y_min - margin)
+            x_max = min(frame.shape[1], x_max + margin)
+            y_max = min(frame.shape[0], y_max + margin)
+            
+            bounds = (x_min, y_min, x_max, y_max)
+            
+            # Create table mask using convex hull
+            table_points = np.array([[x_min, y_min], [x_max, y_min], 
+                                    [x_max, y_max], [x_min, y_max]])
+            
+            table_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(table_mask, [table_points], 255)
+            
+            # Draw table boundary
+            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+            
+            # Lock in detected values
+            LOCKED_BOUNDS[camera_index] = bounds
+            LOCKED_TABLE_MASK[camera_index] = table_mask
+    
+    return frame, aruco_mask, bounds, table_mask, marker_data
+
+def compute_stitching_homography(markers1, markers2):
+    """
+    Compute homography matrix to stitch two camera views.
+    
+    Args:
+        markers1: Marker data from first camera
+        markers2: Marker data from second camera
+        
+    Returns:
+        Homography matrix to transform points from second camera to first
+    """
+    global SHARED_MARKERS
+    
+    # Find common markers between the two cameras
+    common_markers = []
+    
+    # Create dictionaries for fast lookup
+    markers1_dict = {m['id']: m for m in markers1}
+    markers2_dict = {m['id']: m for m in markers2}
+    
+    # Find common marker IDs
+    common_ids = set(markers1_dict.keys()).intersection(set(markers2_dict.keys()))
+    
+    if len(common_ids) < 4:
+        print(f"Warning: Only {len(common_ids)} common markers found. At least 4 are recommended for accurate stitching.")
+    
+    # Get marker centers
+    if common_ids:
+        src_points = np.array([markers2_dict[id]['center'] for id in common_ids], dtype=np.float32)
+        dst_points = np.array([markers1_dict[id]['center'] for id in common_ids], dtype=np.float32)
+        
+        # Store shared markers for reference
+        SHARED_MARKERS = list(common_ids)
+        
+        # Compute homography if we have enough points
+        if len(common_ids) >= 4:
+            H, _ = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
+            return H
+    
+    # If not enough common markers, return identity matrix
+    return np.eye(3, dtype=np.float32)
 
 def detect_white_ball(frame, aruco_mask, table_mask, bounds):
     """Detect the white cue ball in the frame."""
-    # Method 1: HSV color filtering
+    # Convert to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # HSV range for white - slightly modified for better detection
-    lower_white, upper_white = np.array([0, 0, 200]), np.array([180, 40, 255])
+    
+    # HSV range for white ball
+    lower_white = np.array([0, 0, 200])
+    upper_white = np.array([180, 40, 255])
+    
+    # Create mask for white regions
     mask = cv2.inRange(hsv, lower_white, upper_white)
     
-    # Only consider areas within the table bounds
+    # Apply table mask
     mask = cv2.bitwise_and(mask, table_mask)
     
-    # First try with contours from the mask
+    # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if contours:
-        # Filter contours by circularity and size
+        # Filter by circularity and size
         valid_contours = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            # Skip tiny contours
-            if area < 300:
+            if area < 300:  # Skip small contours
                 continue
                 
             perimeter = cv2.arcLength(contour, True)
-            # Avoid division by zero
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
-                if circularity > 0.7:  # Circular enough to be a ball
+                if circularity > 0.7:  # Circle-like shape
                     valid_contours.append(contour)
         
         if valid_contours:
+            # Get the largest valid contour
             largest_contour = max(valid_contours, key=cv2.contourArea)
             ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
-            if radius > 10:
+            
+            if radius > 10:  # Minimum radius threshold
                 return (int(x), int(y)), int(radius)
     
     return None, None
 
 def detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball=None):
     """
-    Detect all colored balls on the table, excluding the cue ball.
-    Returns a list of tuples (center, radius, dominant_color).
-    """
-    # Create a copy of the frame for visualization/debugging
-    debug_frame = frame.copy()
+    Detect colored balls in the frame.
     
-    # Convert to HSV for better color detection
+    Args:
+        frame: Input frame
+        aruco_mask: Mask for ArUco markers
+        table_mask: Mask for table area
+        bounds: Table boundaries (x_min, y_min, x_max, y_max)
+        cue_ball: Position and radius of cue ball, to exclude from detection
+        
+    Returns:
+        List of (center, radius, color) tuples for each detected ball
+    """
+    # Convert to HSV for color analysis
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # We'll use Hough Circles to find all balls, then filter by color
-    # Convert to grayscale for Hough Circles detection
+    # Convert to grayscale for circle detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # Apply the table mask to the grayscale image
-    # This restricts circle detection to just the table area
+    # Apply table mask to grayscale image
     masked_gray = cv2.bitwise_and(gray, gray, mask=table_mask)
     
-    # Apply slight blur to reduce noise
+    # Apply Gaussian blur
     masked_gray = cv2.GaussianBlur(masked_gray, (5, 5), 0)
     
-    # Use Hough Circles to detect all circular objects
-    # Parameters need tuning for your specific table setup
+    # Detect circles using Hough transform
     circles = cv2.HoughCircles(
         masked_gray,
         cv2.HOUGH_GRADIENT,
-        dp=1,           # Resolution ratio
-        minDist=30,     # Minimum distance between circles
-        param1=50,      # Upper threshold for Canny edge detector
-        param2=25,      # Threshold for center detection
-        minRadius=10,   # Minimum radius to detect
-        maxRadius=30    # Maximum radius to detect
+        dp=1,
+        minDist=30,
+        param1=50,
+        param2=25,
+        minRadius=10,
+        maxRadius=30
     )
     
     colored_balls = []
     
     if circles is not None:
-        # Convert circle parameters to integers
+        # Convert to integer coordinates
         circles = np.uint16(np.around(circles))
         
-        # Process each detected circle
         for circle in circles[0, :]:
             x, y, radius = circle
             center = (int(x), int(y))
@@ -464,53 +604,48 @@ def detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball=None):
             if cue_ball and distance(center, cue_ball) < radius * 1.5:
                 continue
                 
-            # Additional check to ensure the ball is fully within the table bounds
-            if (x - radius < bounds[0] or 
-                y - radius < bounds[1] or 
-                x + radius > bounds[2] or 
+            # Skip if not within bounds
+            if (x - radius < bounds[0] or
+                y - radius < bounds[1] or
+                x + radius > bounds[2] or
                 y + radius > bounds[3]):
                 continue
                 
-            # Make sure the center is within the table mask
-            if table_mask[y, x] == 0:
+            # Skip if center is outside table mask
+            if y < table_mask.shape[0] and x < table_mask.shape[1] and table_mask[y, x] == 0:
                 continue
                 
-            # Create a mask for this circle
+            # Create a mask for this ball
             ball_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
             cv2.circle(ball_mask, center, radius, 255, -1)
             
-            # Apply the table mask
+            # Apply table mask
             ball_mask = cv2.bitwise_and(ball_mask, table_mask)
             
-            # If the masked area is too small, skip this circle
-            # (helps filter out partial circles at the edge of the table)
+            # Skip if masked area is too small
             if np.sum(ball_mask) < np.pi * radius * radius * 0.7:
                 continue
             
-            # Get the average color in HSV space
+            # Get average color
             masked_hsv = cv2.bitwise_and(hsv, hsv, mask=ball_mask)
-            if np.sum(ball_mask) > 0:  # Ensure we have some pixels to analyze
+            if np.sum(ball_mask) > 0:
                 hsv_values = masked_hsv[ball_mask > 0]
                 mean_color = np.mean(hsv_values, axis=0).astype(int)
                 
-                # Check if the ball is white (cue ball)
+                # Skip if it's white (likely the cue ball)
                 h, s, v = mean_color
-                if s < 40 and v > 180:  # Low saturation, high value
-                    continue  # Skip cue ball
+                if s < 40 and v > 180:
+                    continue
                 
-                # Add to the list of colored balls
+                # Add to colored balls list
                 colored_balls.append((center, radius, mean_color))
-                
-                # Draw circle on debug frame
-                cv2.circle(debug_frame, center, radius, (0, 0, 255), 2)
     
     return colored_balls
 
 def get_color_name(hsv_color):
-    """Convert HSV color to a human-readable name."""
+    """Convert HSV color values to a human-readable name."""
     h, s, v = hsv_color
     
-    # Define color ranges
     if s < 50:
         return "Black" if v < 100 else "White"
     
@@ -530,72 +665,89 @@ def get_color_name(hsv_color):
     return "Unknown"
 
 def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
-    """Detect the orientation of the cue stick."""
+    """
+    Detect the orientation of the cue stick.
+    
+    Args:
+        frame: Input frame
+        cue_ball: Position of cue ball
+        aruco_mask: Mask for ArUco markers
+        table_mask: Mask for table area
+        
+    Returns:
+        Tuple of (cue parameters, is_pointing_at_ball)
+    """
     if cue_ball is None:
         return None, False
-        
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # HSV range for silver (light gray to white-ish colors)
-    # The exact range may need fine-tuning depending on the lighting conditions.
-    lower_silver = np.array([0, 0, 180])  # Light gray/white colors
-    upper_silver = np.array([180, 30, 255])  # Light gray/white colors
     
-    # Create mask for silver objects (cue stick in this case)
+    # Convert to HSV
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # HSV range for cue stick (light colors)
+    lower_silver = np.array([0, 0, 180])
+    upper_silver = np.array([180, 30, 255])
+    
+    # Create mask for potential cue stick
     mask = cv2.inRange(hsv, lower_silver, upper_silver)
     
-    # Apply the ArUco mask to exclude those regions
+    # Apply aruco mask
     mask = cv2.bitwise_and(mask, aruco_mask)
     
-    # Find contours in the mask
+    # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if contours:
-        # Find the largest silver contour (the cue stick)
+        # Find largest contour (likely the cue stick)
         largest_contour = max(contours, key=cv2.contourArea)
         
-        # Fit a line to the silver contour (cue stick)
+        # Fit a line to the contour
         [vx, vy, x, y] = cv2.fitLine(largest_contour, cv2.DIST_L2, 0, 0.01, 0.01)
         
-        # Extract scalar values from single-element arrays
+        # Extract scalar values
         vx_scalar = float(vx[0])
         vy_scalar = float(vy[0])
         x_scalar = float(x[0])
         y_scalar = float(y[0])
         
-        # Invert direction by 180 degrees
+        # Ensure the cue direction points away from the ball
+        # (Invert direction if needed)
         vx_scalar, vy_scalar = -vx_scalar, -vy_scalar
         
-        # Get the cue ball position
+        # Get cue ball position
         cue_x, cue_y = cue_ball
         
-        # Calculate distance from cue line to ball center
-        # The cue line starts at (x,y) and goes in direction (vx,vy)
-        
-        # Project vector from cue line point to ball onto the perpendicular to the cue direction
-        perp_x, perp_y = -vy_scalar, vx_scalar  # Perpendicular to (vx, vy)
+        # Calculate perpendicular distance from cue line to ball center
+        perp_x, perp_y = -vy_scalar, vx_scalar  # Perpendicular to direction
         vec_to_ball_x, vec_to_ball_y = cue_x - x_scalar, cue_y - y_scalar
         
         # Distance from line to point
-        distance = abs(vec_to_ball_x * perp_x + vec_to_ball_y * perp_y) / np.sqrt(perp_x**2 + perp_y**2)
+        distance_to_line = abs(vec_to_ball_x * perp_x + vec_to_ball_y * perp_y) / np.sqrt(perp_x**2 + perp_y**2)
         
         # Check if ball is ahead of the cue, not behind
         dot_product = vec_to_ball_x * vx_scalar + vec_to_ball_y * vy_scalar
         is_ahead = dot_product > 0
         
-        # Maximum allowed distance (can be adjusted based on ball radius and tolerance)
+        # Maximum allowed distance (can be adjusted based on ball radius)
         max_distance = 20  # pixels
         
-        is_pointing_at_ball = is_ahead and distance < max_distance
+        is_pointing_at_ball = is_ahead and distance_to_line < max_distance
         
-        # Return the line parameters (direction and origin) and whether it's pointing at the ball
+        # Return line parameters and pointing status
         return (vx_scalar, vy_scalar, cue_x, cue_y), is_pointing_at_ball
-        
+    
     return None, False
 
 def find_target_ball(cue_ball, cue_line, all_balls):
     """
     Find the ball that the cue is pointing at.
-    Returns the ball information (center, radius, color) or None if no ball is targeted.
+    
+    Args:
+        cue_ball: Position of cue ball
+        cue_line: Parameters of cue line
+        all_balls: List of all detected balls
+        
+    Returns:
+        Ball information (center, radius, color) or None
     """
     if cue_ball is None or cue_line is None or not all_balls:
         return None
@@ -610,187 +762,141 @@ def find_target_ball(cue_ball, cue_line, all_balls):
         center, radius, color = ball_info
         ball_x, ball_y = center
         
-        # Calculate perpendicular distance from ball center to cue line
-        # The line is defined by: (x0, y0) and direction (vx, vy)
-        # Avoid division by zero
-        if vx == 0:
-            # Vertical line
+        # Calculate perpendicular distance from ball to cue line
+        if vx == 0:  # Vertical line
             perp_distance = abs(ball_x - x0)
         else:
-            # Distance from point to line formula
             perp_distance = abs(vy*(ball_x - x0) - vx*(ball_y - y0)) / np.sqrt(vx*vx + vy*vy)
         
-        # Calculate distance from cue ball to this ball
+        # Distance from cue ball to this ball
         ball_distance = distance(cue_ball, center)
         
-        # Check if the ball is in front of the cue ball (not behind)
-        # Calculate the dot product of the vector from cue to ball and the cue direction
+        # Check if ball is in front of cue ball
         ball_vector = [ball_x - cue_x, ball_y - cue_y]
         direction_vector = [vx, vy]
         dot_product = ball_vector[0]*direction_vector[0] + ball_vector[1]*direction_vector[1]
         
-        # If the ball is in front of the cue and close enough to the line
-        if dot_product > 0 and perp_distance < radius + 5:  # Adding a small tolerance
+        # Ball must be in front of cue and close to the line
+        if dot_product > 0 and perp_distance < radius + 5:
             if ball_distance < min_ball_distance:
                 min_ball_distance = ball_distance
                 closest_ball = ball_info
     
     return closest_ball
 
-def process_frame(frame, detector, projection_system=None):
+def transform_point(point, homography=None):
     """
-    Process a frame, detect balls and trajectories, and update projection system.
+    Transform a point using a homography matrix.
     
     Args:
-        frame: Input video frame
+        point: (x, y) coordinates
+        homography: Homography transformation matrix
+        
+    Returns:
+        Transformed point
+    """
+    if homography is None:
+        return point
+        
+    # Convert to homogeneous coordinates
+    p = np.array([[point[0], point[1], 1]], dtype=np.float32).T
+    
+    # Apply transformation
+    p_transformed = np.dot(homography, p)
+    
+    # Convert back from homogeneous coordinates
+    return (int(p_transformed[0]/p_transformed[2]), 
+            int(p_transformed[1]/p_transformed[2]))
+
+def process_frame(frame, detector, camera_index=0, homography=None, projection_system=None):
+    """
+    Process a single frame, detect balls and trajectories.
+    
+    Args:
+        frame: Input frame
         detector: ArUco marker detector
-        projection_system: Optional LineProjectionSystem instance
+        camera_index: Camera index (0 or 1)
+        homography: Homography matrix for stitching
+        projection_system: Optional LineProjectionSystem
     
     Returns:
-        Processed frame with visualization
+        Tuple of (processed frame, marker data, detected balls, trajectories)
     """
-    # Make a copy of the original frame for clean visualization
+    # Make a copy for visualization
     original_frame = frame.copy()
     
-    # Detect ArUco markers and get boundary coordinates and table mask
-    frame, aruco_mask, bounds, table_mask = detect_aruco_markers(frame, detector)
-    
-    # Detect all balls using the Hough Circle method - much more reliable
-    gray = cv2.cvtColor(original_frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    circles = cv2.HoughCircles(
-        gray,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=30,
-        param1=50,
-        param2=25,
-        minRadius=10,
-        maxRadius=30
+    # Detect ArUco markers
+    frame, aruco_mask, bounds, table_mask, marker_data = detect_aruco_markers(
+        frame, detector, camera_index
     )
     
-    # Detect cue ball separately
+    # Detect cue ball
     cue_ball, cue_radius = detect_white_ball(frame, aruco_mask, table_mask, bounds)
     
-    # Also detect colored balls separately (as a fallback)
+    # Detect colored balls
     colored_balls = detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball)
     
-    # Store detected ball information
+    # Store all detected balls
     all_detected_balls = []
     
-    # Mark all balls detected by Hough Circles (this should work better)
-    if circles is not None:
-        circles = np.uint16(np.around(circles))
-        
-        for circle in circles[0, :]:
-            x, y, radius = circle
-            center = (int(x), int(y))
-            
-            # Skip if this point is outside the table area
-            if table_mask[y, x] == 0:
-                continue
-                
-            # Additional check to ensure the entire ball is within the table bounds
-            if (x - radius < bounds[0] or 
-                y - radius < bounds[1] or 
-                x + radius > bounds[2] or 
-                y + radius > bounds[3]):
-                continue
-                
-            # Check if this is the cue ball we already detected
-            is_cue_ball = False
-            if cue_ball and distance(center, cue_ball) < radius:
-                is_cue_ball = True
-                continue  # Skip cue ball, we draw it separately
-                
-            # Draw the circle for non-cue balls
-            if not is_cue_ball:
-                # Draw circle around the ball
-                cv2.circle(frame, center, radius, (0, 0, 255), 2)
-                
-                # Determine color
-                ball_mask = np.zeros(original_frame.shape[:2], dtype=np.uint8)
-                cv2.circle(ball_mask, center, radius, 255, -1)
-                
-                hsv = cv2.cvtColor(original_frame, cv2.COLOR_BGR2HSV)
-                masked_hsv = cv2.bitwise_and(hsv, hsv, mask=ball_mask)
-                if np.sum(ball_mask) > 0:
-                    mean_color = np.mean(masked_hsv[ball_mask > 0], axis=0).astype(int)
-                    color_name = get_color_name(mean_color)
-                    
-                    # Store ball information
-                    all_detected_balls.append((center, radius, color_name))
-    
-    # Draw any colored balls from our separate detection (as a backup)
-    # This helps ensure we don't miss any balls
+    # Process colored balls
     for ball_center, ball_radius, ball_color in colored_balls:
-        # Check if we already drew this ball from Hough Circles
-        already_drawn = False
-        if circles is not None:
-            for circle in circles[0, :]:
-                circle_center = (int(circle[0]), int(circle[1]))
-                if distance(ball_center, circle_center) < ball_radius:
-                    already_drawn = True
-                    break
+        # Draw circle around ball
+        cv2.circle(frame, ball_center, ball_radius, (0, 0, 255), 2)
         
-        if not already_drawn:
-            # Draw circle around the ball
-            cv2.circle(frame, ball_center, ball_radius, (0, 0, 255), 2)
-            
-            # Get color name
-            color_name = get_color_name(ball_color)
-            
-            # Store ball information
-            all_detected_balls.append((ball_center, ball_radius, color_name))
+        # Get color name
+        color_name = get_color_name(ball_color)
+        
+        # Store ball information
+        all_detected_balls.append((ball_center, ball_radius, color_name))
     
-    # Initialize target ball and trajectories
+    # Initialize trajectory variables
     target_ball = None
     trajectories = None
     
-    # Draw the cue ball and detect cue orientation
+    # Draw cue ball and detect cue orientation
     if cue_ball:
         cv2.circle(frame, cue_ball, cue_radius, (0, 255, 0), 2)
         cv2.putText(frame, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    
-        # Detect cue orientation
-        cue_line, is_pointing_at_ball = detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask)
         
-        # Draw the cue line ONLY if it's pointing at the ball
+        # Detect cue orientation
+        cue_line, is_pointing_at_ball = detect_cue_orientation(
+            frame, cue_ball, aruco_mask, table_mask
+        )
+        
+        # Only process if cue is pointing at the ball
         if cue_line and is_pointing_at_ball:
             vx, vy, x0, y0 = cue_line
             
-            # Find the ball that the cue is pointing at (if any)
+            # Find target ball
             target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
             
-            # If no target ball is found, just draw the regular cue line
+            # If no target ball, draw regular cue line
             if not target_ball:
-                # Calculate end point of the line (extend in cue direction)
-                # Using scalar values to avoid deprecation warning
+                # Calculate end point
                 end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
-                
-                # Start point is the cue ball
                 start_point = (int(x0), int(y0))
                 
-                # Draw the line
-                cv2.line(frame, start_point, end_point, (255, 255, 255), 2)  # White line
+                # Draw line
+                cv2.line(frame, start_point, end_point, (255, 255, 255), 2)
     
-    # If a target ball is found, label it and draw the trajectory
+    # If target ball found, draw trajectory
     if target_ball:
         center, radius, _ = target_ball
-        # Draw a label for the target ball
-        cv2.putText(frame, "Target Ball", (center[0] - 30, center[1] - radius - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         
-        # Draw the advanced trajectory
+        # Label target ball
+        cv2.putText(frame, "Target Ball", (center[0] - 30, center[1] - radius - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        
+        # Calculate and draw trajectory
         if cue_ball and cue_line:
             try:
                 vx, vy, _, _ = cue_line
                 
-                # Calculate advanced trajectories using the physics
+                # Calculate collision trajectory
                 trajectories = calculate_advanced_collision(
-                    cue_ball, 
+                    cue_ball,
                     center,
                     cue_radius,
                     radius,
@@ -799,25 +905,22 @@ def process_frame(frame, detector, projection_system=None):
                 
                 if trajectories:
                     if trajectories['will_collide']:
-                        # Draw line from cue stick to collision point (white)
-                        cv2.line(frame, trajectories['cue_path'][0], 
-                                trajectories['collision_point'], (255, 255, 255), 2)
+                        # Draw trajectory lines
+                        cv2.line(frame, trajectories['cue_path'][0],
+                               trajectories['collision_point'], (255, 255, 255), 2)
                         
-                        # Draw cue ball trajectory after collision (white)
-                        cv2.line(frame, trajectories['collision_point'], 
-                                trajectories['cue_path'][3], (255, 255, 255), 2)
+                        cv2.line(frame, trajectories['collision_point'],
+                               trajectories['cue_path'][3], (255, 255, 255), 2)
                         
-                        # Draw target ball trajectory (white)
-                        cv2.line(frame, trajectories['collision_point'], 
-                                trajectories['target_path'][1], (255, 255, 255), 2)
+                        cv2.line(frame, trajectories['collision_point'],
+                               trajectories['target_path'][1], (255, 255, 255), 2)
                         
                         # Mark collision point
                         cv2.circle(frame, trajectories['collision_point'], 3, (0, 255, 255), -1)
                     else:
-                        # No collision - just draw the straight path
-                        cv2.line(frame, trajectories['cue_path'][0], 
-                                trajectories['cue_path'][1], (255, 255, 255), 2)
-                    
+                        # No collision - straight path
+                        cv2.line(frame, trajectories['cue_path'][0],
+                               trajectories['cue_path'][1], (255, 255, 255), 2)
             except Exception as e:
                 print(f"Error drawing trajectories: {e}")
                 import traceback
@@ -825,39 +928,79 @@ def process_frame(frame, detector, projection_system=None):
     
     # Update projection system if provided
     if projection_system is not None and trajectories is not None:
-        # Extract lines from trajectories
-        lines = extract_lines_from_trajectories(trajectories)
+        # Extract trajectory lines with appropriate transformation
+        lines = extract_lines_from_trajectories(trajectories, homography if camera_index == 1 else None)
         
-        # Update the projection system with these lines
+        # Update projection system
         projection_system.update_lines(lines)
     
-    return frame
+    # Draw camera index on frame
+    cv2.putText(frame, f"Camera {camera_index+1}", (20, 30),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+    
+    # Return processed frame and detection data
+    return frame, marker_data, all_detected_balls, trajectories
+
+def create_stitched_view(frame1, frame2, homography):
+    """
+    Create a stitched view of two camera frames.
+    
+    Args:
+        frame1: First camera frame
+        frame2: Second camera frame
+        homography: Homography matrix to transform frame2 to frame1's perspective
+        
+    Returns:
+        Stitched frame
+    """
+    # Get dimensions
+    h1, w1 = frame1.shape[:2]
+    h2, w2 = frame2.shape[:2]
+    
+    # Warp the second frame to align with the first
+    warped_frame2 = cv2.warpPerspective(frame2, homography, (w1, h1))
+    
+    # Create a mask to blend the overlapping regions
+    mask = np.zeros((h1, w1), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, np.array([[0, 0], [w1//2, 0], [w1//2, h1], [0, h1]]), 255)
+    
+    # Combine the frames
+    stitched = np.copy(warped_frame2)
+    stitched[mask == 255] = frame1[mask == 255]
+    
+    # Draw a line at the seam
+    cv2.line(stitched, (w1//2, 0), (w1//2, h1), (0, 255, 255), 1)
+    
+    return stitched
 
 def main():
-    """Main function for the Dual Camera Pool Tracker with Line Projection."""
-    print("Starting Dual Camera Pool Tracker with Line Projection System...")
+    """Main function for the Dual Camera Pool Table Stitcher with Projection."""
+    print("Starting Dual Camera Pool Table Stitcher with Projection...")
     
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Dual Camera Pool Tracker with Line Projection')
-    parser.add_argument('--video', type=str, default='', help='Path to video file (if not specified, cameras will be used)')
+    parser = argparse.ArgumentParser(description='Dual Camera Pool Table Stitcher with Projection')
+    parser.add_argument('--video', type=str, default='', help='Path to video file')
     parser.add_argument('--cam1', type=int, default=0, help='First camera index (default: 0)')
     parser.add_argument('--cam2', type=int, default=2, help='Second camera index (default: 2)')
-    parser.add_argument('--output', type=str, default='', help='Path to save output video (optional)')
-    parser.add_argument('--projection', action='store_true', help='Enable line projection system')
-    parser.add_argument('--use-matplotlib', action='store_true', help='Use Matplotlib for projection (default: OpenCV)')
+    parser.add_argument('--output', type=str, default='', help='Path to save output video')
+    parser.add_argument('--projection', action='store_true', help='Enable line projection')
+    parser.add_argument('--use-matplotlib', action='store_true', help='Use Matplotlib for projection')
+    parser.add_argument('--no-stitch', action='store_true', help='Disable stitching, show side-by-side')
     args = parser.parse_args()
 
-    # Initialize video captures - either from camera or video file
+    # Initialize video capture
     if args.video:
+        # Use the same video for both cameras when testing
         cap1 = cv2.VideoCapture(args.video)
-        cap2 = cv2.VideoCapture(args.video)  # Using the same video file for both displays
+        cap2 = cv2.VideoCapture(args.video)
         print(f"Reading from video file: {args.video}")
     else:
+        # Use two separate cameras
         cap1 = cv2.VideoCapture(args.cam1, cv2.CAP_DSHOW)
         cap2 = cv2.VideoCapture(args.cam2, cv2.CAP_DSHOW)
-        print(f"Reading from camera indices: {args.cam1} and {args.cam2}")
-
-    # Check if the cameras opened successfully
+        print(f"Reading from cameras: {args.cam1} and {args.cam2}")
+    
+    # Check if cameras opened successfully
     if not cap1.isOpened():
         print(f"Error: Could not open first camera (index {args.cam1}).")
         return
@@ -865,116 +1008,152 @@ def main():
     if not cap2.isOpened():
         print(f"Error: Could not open second camera (index {args.cam2}).")
         return
-
+    
     # Get video properties
     frame_width1 = int(cap1.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height1 = int(cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_width2 = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height2 = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Use the larger of the two heights for the combined display
-    combined_height = max(frame_height1, frame_height2)
-    combined_width = frame_width1 + frame_width2
+    # Combined dimensions
+    if args.no_stitch:
+        # Side-by-side view
+        combined_width = frame_width1 + frame_width2
+        combined_height = max(frame_height1, frame_height2)
+    else:
+        # Stitched view - approximately 1.5x the width of one camera
+        combined_width = int(frame_width1 * 1.5)
+        combined_height = frame_height1
+    
+    # Estimated pool table dimensions (for projection)
+    table_width = combined_width
+    table_height = combined_height
     
     # FPS
-    fps1 = cap1.get(cv2.CAP_PROP_FPS)
-    fps2 = cap2.get(cv2.CAP_PROP_FPS)
-    fps = max(fps1, fps2)
-    if fps == 0:  # Sometimes FPS is not available
+    fps = max(cap1.get(cv2.CAP_PROP_FPS), cap2.get(cv2.CAP_PROP_FPS))
+    if fps == 0:
         fps = 30
-
-    # Initialize video writer if output is specified
+    
+    # Initialize video writer
     output_writer = None
     if args.output:
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        output_writer = cv2.VideoWriter(args.output, fourcc, fps, (combined_width, combined_height))
+        output_writer = cv2.VideoWriter(
+            args.output, fourcc, fps, (combined_width, combined_height)
+        )
         print(f"Saving output to: {args.output}")
-
-    # Define the ArUco dictionary and detector parameters
+    
+    # Initialize ArUco detector
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     parameters = cv2.aruco.DetectorParameters()
     detector = cv2.aruco.ArucoDetector(dictionary, parameters)
-
-    # Initialize line projection system if enabled
+    
+    # Initialize line projection system
     projection_system = None
     if args.projection:
-        shared_data = {'frame_size': (combined_width, combined_height)}
+        shared_data = {
+            'frame_size': (combined_width, combined_height),
+            'table_dimensions': (table_width, table_height)
+        }
         projection_system = LineProjectionSystem(shared_data)
         projection_system.run(use_matplotlib=args.use_matplotlib)
         print("Line Projection System initialized.")
-
-    # Create window for combined display
-    cv2.namedWindow("Dual Pool Tracker", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Dual Pool Tracker", combined_width, combined_height)
-
+    
+    # Create windows
+    cv2.namedWindow("Camera Views", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Camera Views", combined_width, combined_height)
+    
+    # Variable to store homography matrix
+    homography = None
+    
     try:
         while True:
-            # Read frames from both cameras
+            # Read frames
             ret1, frame1 = cap1.read()
             ret2, frame2 = cap2.read()
             
-            # Check if frames were successfully captured
             if not ret1 or not ret2:
-                print("End of video or failed to grab frame from one of the cameras.")
+                print("End of video or failed to grab frames.")
                 break
             
-            # Process both frames
-            processed_frame1 = process_frame(frame1, detector, projection_system if args.cam1 == 0 else None)
-            processed_frame2 = process_frame(frame2, detector, projection_system if args.cam2 == 0 else None)
+            # Process frames
+            processed_frame1, markers1, balls1, trajectories1 = process_frame(
+                frame1, detector, 0, None, projection_system
+            )
             
-            # Resize frames to have the same height for side-by-side display
-            scale1 = combined_height / frame_height1
-            scale2 = combined_height / frame_height2
+            processed_frame2, markers2, balls2, trajectories2 = process_frame(
+                frame2, detector, 1, homography, projection_system
+            )
             
-            new_width1 = int(frame_width1 * scale1)
-            new_width2 = int(frame_width2 * scale2)
+            # Compute homography if enough markers are detected
+            if markers1 and markers2:
+                homography = compute_stitching_homography(markers1, markers2)
             
-            resized_frame1 = cv2.resize(processed_frame1, (new_width1, combined_height))
-            resized_frame2 = cv2.resize(processed_frame2, (new_width2, combined_height))
+            # Create output frame
+            if args.no_stitch or homography is None:
+                # Side-by-side view
+                max_height = max(frame_height1, frame_height2)
+                
+                # Resize frames to have the same height
+                scale1 = max_height / frame_height1
+                scale2 = max_height / frame_height2
+                
+                new_width1 = int(frame_width1 * scale1)
+                new_width2 = int(frame_width2 * scale2)
+                
+                resized_frame1 = cv2.resize(processed_frame1, (new_width1, max_height))
+                resized_frame2 = cv2.resize(processed_frame2, (new_width2, max_height))
+                
+                # Combine side by side
+                combined_frame = np.zeros((max_height, new_width1 + new_width2, 3), dtype=np.uint8)
+                combined_frame[:, :new_width1] = resized_frame1
+                combined_frame[:, new_width1:] = resized_frame2
+                
+                # Draw dividing line
+                cv2.line(combined_frame, (new_width1, 0), (new_width1, max_height), (0, 255, 255), 2)
+            else:
+                # Create stitched view
+                combined_frame = create_stitched_view(processed_frame1, processed_frame2, homography)
             
-            # Combine frames side by side
-            combined_frame = np.zeros((combined_height, new_width1 + new_width2, 3), dtype=np.uint8)
-            combined_frame[:, :new_width1] = resized_frame1
-            combined_frame[:, new_width1:new_width1 + new_width2] = resized_frame2
+            # Display frame
+            cv2.imshow("Camera Views", combined_frame)
             
-            # Display the combined frame
-            cv2.imshow("Dual Pool Tracker", combined_frame)
-            
-            # Write the frame to output file if specified
+            # Write frame to output
             if output_writer is not None:
-                # Resize to the original dimensions if needed for the output writer
+                # Resize if needed
                 output_frame = cv2.resize(combined_frame, (combined_width, combined_height))
                 output_writer.write(output_frame)
             
-            # Exit on 'q' key press or if ESC is pressed
+            # Handle keyboard input
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or key == 27:
+            if key == ord('q') or key == 27:  # 'q' or ESC
                 break
             
-            # If reading from a video and 'p' is pressed, pause/resume
+            # Pause/resume on 'p' if using video file
             if args.video and key == ord('p'):
                 while True:
                     key2 = cv2.waitKey(0) & 0xFF
-                    if key2 == ord('p'):  # Resume on 'p'
+                    if key2 == ord('p'):  # Resume
                         break
-                    if key2 == ord('q') or key2 == 27:  # Quit on 'q' or ESC
+                    if key2 == ord('q') or key2 == 27:  # Quit
                         return
-                        
-            # Add a small delay to make sure the projection system can keep up
+            
+            # Small delay
             time.sleep(0.01)
+            
     finally:
         # Clean up
         cap1.release()
         cap2.release()
+        
         if output_writer is not None:
             output_writer.release()
         
-        # Stop the projection system if it was created
         if projection_system is not None:
             projection_system.stop()
-            
+        
         cv2.destroyAllWindows()
-        print("Dual Pool Tracker stopped.")
+        print("Dual Camera Pool Table Stitcher stopped.")
 
 if __name__ == "__main__":
     main()

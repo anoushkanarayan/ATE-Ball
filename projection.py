@@ -416,6 +416,7 @@ def detect_aruco_markers(frame, detector, camera_index=0):
         # Draw the detected markers
         frame = cv2.aruco.drawDetectedMarkers(frame, markerCorners, markerIds)
         
+        # Process each marker
         all_corners = []
         for i, (corners, marker_id) in enumerate(zip(markerCorners, markerIds)):
             corners = corners.reshape((4, 2)).astype(int)
@@ -436,35 +437,44 @@ def detect_aruco_markers(frame, detector, camera_index=0):
             cv2.putText(frame, f"ID: {marker_id[0]}", (center_x - 20, center_y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
-        if all_corners:
-            # Estimate table bounds using convex hull of markers
-            x_min = max(0, min([c[0] for c in all_corners]))
-            y_min = max(0, min([c[1] for c in all_corners]))
-            x_max = min(frame.shape[1], max([c[0] for c in all_corners]))
-            y_max = min(frame.shape[0], max([c[1] for c in all_corners]))
+        if all_corners and len(all_corners) >= 4:
+            # For a precise table boundary, use the exact corners of the markers
+            # Find the outermost corner points to make a tight bounding rectangle
+            x_coords = [c[0] for c in all_corners]
+            y_coords = [c[1] for c in all_corners]
             
-            # Add some margin
-            margin = 20
-            x_min = max(0, x_min - margin)
-            y_min = max(0, y_min - margin)
-            x_max = min(frame.shape[1], x_max + margin)
-            y_max = min(frame.shape[0], y_max + margin)
+            # Get min and max values to form the bounds
+            x_min = max(0, min(x_coords))
+            y_min = max(0, min(y_coords))
+            x_max = min(frame.shape[1], max(x_coords))
+            y_max = min(frame.shape[0], max(y_coords))
             
-            bounds = (x_min, y_min, x_max, y_max)
+            # Apply a negative margin of 25 pixels to make the box smaller
+            margin = -25  # Negative margin to shrink the boundary
+            x_min = max(0, x_min - margin)  # Adding negative margin increases the value
+            y_min = max(0, y_min - margin)  # Adding negative margin increases the value
+            x_max = min(frame.shape[1], x_max + margin)  # Adding negative margin decreases the value
+            y_max = min(frame.shape[0], y_max + margin)  # Adding negative margin decreases the value
             
-            # Create table mask using convex hull
-            table_points = np.array([[x_min, y_min], [x_max, y_min], 
-                                    [x_max, y_max], [x_min, y_max]])
-            
-            table_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-            cv2.fillPoly(table_mask, [table_points], 255)
-            
-            # Draw table boundary
-            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
-            
-            # Lock in detected values
-            LOCKED_BOUNDS[camera_index] = bounds
-            LOCKED_TABLE_MASK[camera_index] = table_mask
+            # Ensure we have a valid box after applying the margin
+            if x_max > x_min and y_max > y_min:
+                bounds = (x_min, y_min, x_max, y_max)
+                
+                # Create a precise table mask using the bounds
+                table_points = np.array([[x_min, y_min], [x_max, y_min], 
+                                        [x_max, y_max], [x_min, y_max]])
+                
+                table_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                cv2.fillPoly(table_mask, [table_points], 255)
+                
+                # Draw table boundary
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+                
+                # Lock in detected values
+                LOCKED_BOUNDS[camera_index] = bounds
+                LOCKED_TABLE_MASK[camera_index] = table_mask
+            else:
+                print(f"Warning: Invalid table bounds after applying margin. Using full frame.")
     
     return frame, aruco_mask, bounds, table_mask, marker_data
 

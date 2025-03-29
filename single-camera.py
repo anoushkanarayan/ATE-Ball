@@ -834,35 +834,52 @@ def process_frame(frame, detector, projection_system=None):
     return frame
 
 def main():
-    """Main function for the Pool Tracker with Line Projection."""
-    print("Starting Pool Tracker with Line Projection System...")
+    """Main function for the Dual Camera Pool Tracker with Line Projection."""
+    print("Starting Dual Camera Pool Tracker with Line Projection System...")
     
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Pool tracker with Line Projection')
-    parser.add_argument('--video', type=str, default='', help='Path to video file (if not specified, camera will be used)')
-    parser.add_argument('--camera', type=int, default=1, help='Camera index (default: 1)')
+    parser = argparse.ArgumentParser(description='Dual Camera Pool Tracker with Line Projection')
+    parser.add_argument('--video', type=str, default='', help='Path to video file (if not specified, cameras will be used)')
+    parser.add_argument('--cam1', type=int, default=0, help='First camera index (default: 0)')
+    parser.add_argument('--cam2', type=int, default=2, help='Second camera index (default: 2)')
     parser.add_argument('--output', type=str, default='', help='Path to save output video (optional)')
     parser.add_argument('--projection', action='store_true', help='Enable line projection system')
     parser.add_argument('--use-matplotlib', action='store_true', help='Use Matplotlib for projection (default: OpenCV)')
     args = parser.parse_args()
 
-    # Initialize video capture - either from camera or video file
+    # Initialize video captures - either from camera or video file
     if args.video:
-        cap = cv2.VideoCapture(args.video)
+        cap1 = cv2.VideoCapture(args.video)
+        cap2 = cv2.VideoCapture(args.video)  # Using the same video file for both displays
         print(f"Reading from video file: {args.video}")
     else:
-        cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
-        print(f"Reading from camera index: {args.camera}")
+        cap1 = cv2.VideoCapture(args.cam1, cv2.CAP_DSHOW)
+        cap2 = cv2.VideoCapture(args.cam2, cv2.CAP_DSHOW)
+        print(f"Reading from camera indices: {args.cam1} and {args.cam2}")
 
-    # Check if the video/camera opened successfully
-    if not cap.isOpened():
-        print("Error: Could not open video source.")
+    # Check if the cameras opened successfully
+    if not cap1.isOpened():
+        print(f"Error: Could not open first camera (index {args.cam1}).")
+        return
+    
+    if not cap2.isOpened():
+        print(f"Error: Could not open second camera (index {args.cam2}).")
         return
 
     # Get video properties
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_width1 = int(cap1.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height1 = int(cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_width2 = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height2 = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Use the larger of the two heights for the combined display
+    combined_height = max(frame_height1, frame_height2)
+    combined_width = frame_width1 + frame_width2
+    
+    # FPS
+    fps1 = cap1.get(cv2.CAP_PROP_FPS)
+    fps2 = cap2.get(cv2.CAP_PROP_FPS)
+    fps = max(fps1, fps2)
     if fps == 0:  # Sometimes FPS is not available
         fps = 30
 
@@ -870,7 +887,7 @@ def main():
     output_writer = None
     if args.output:
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        output_writer = cv2.VideoWriter(args.output, fourcc, fps, (frame_width, frame_height))
+        output_writer = cv2.VideoWriter(args.output, fourcc, fps, (combined_width, combined_height))
         print(f"Saving output to: {args.output}")
 
     # Define the ArUco dictionary and detector parameters
@@ -881,27 +898,53 @@ def main():
     # Initialize line projection system if enabled
     projection_system = None
     if args.projection:
-        shared_data = {'frame_size': (frame_width, frame_height)}
+        shared_data = {'frame_size': (combined_width, combined_height)}
         projection_system = LineProjectionSystem(shared_data)
         projection_system.run(use_matplotlib=args.use_matplotlib)
         print("Line Projection System initialized.")
 
+    # Create window for combined display
+    cv2.namedWindow("Dual Pool Tracker", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Dual Pool Tracker", combined_width, combined_height)
+
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("End of video or failed to grab frame.")
+            # Read frames from both cameras
+            ret1, frame1 = cap1.read()
+            ret2, frame2 = cap2.read()
+            
+            # Check if frames were successfully captured
+            if not ret1 or not ret2:
+                print("End of video or failed to grab frame from one of the cameras.")
                 break
             
-            # Process the frame with optional projection system
-            processed_frame = process_frame(frame, detector, projection_system)
+            # Process both frames
+            processed_frame1 = process_frame(frame1, detector, projection_system if args.cam1 == 0 else None)
+            processed_frame2 = process_frame(frame2, detector, projection_system if args.cam2 == 0 else None)
             
-            # Display the frame
-            cv2.imshow("Pool Tracker", processed_frame)
+            # Resize frames to have the same height for side-by-side display
+            scale1 = combined_height / frame_height1
+            scale2 = combined_height / frame_height2
+            
+            new_width1 = int(frame_width1 * scale1)
+            new_width2 = int(frame_width2 * scale2)
+            
+            resized_frame1 = cv2.resize(processed_frame1, (new_width1, combined_height))
+            resized_frame2 = cv2.resize(processed_frame2, (new_width2, combined_height))
+            
+            # Combine frames side by side
+            combined_frame = np.zeros((combined_height, new_width1 + new_width2, 3), dtype=np.uint8)
+            combined_frame[:, :new_width1] = resized_frame1
+            combined_frame[:, new_width1:new_width1 + new_width2] = resized_frame2
+            
+            # Display the combined frame
+            cv2.imshow("Dual Pool Tracker", combined_frame)
             
             # Write the frame to output file if specified
             if output_writer is not None:
-                output_writer.write(processed_frame)
+                # Resize to the original dimensions if needed for the output writer
+                output_frame = cv2.resize(combined_frame, (combined_width, combined_height))
+                output_writer.write(output_frame)
             
             # Exit on 'q' key press or if ESC is pressed
             key = cv2.waitKey(1) & 0xFF
@@ -921,7 +964,8 @@ def main():
             time.sleep(0.01)
     finally:
         # Clean up
-        cap.release()
+        cap1.release()
+        cap2.release()
         if output_writer is not None:
             output_writer.release()
         
@@ -930,7 +974,7 @@ def main():
             projection_system.stop()
             
         cv2.destroyAllWindows()
-        print("Pool Tracker stopped.")
+        print("Dual Pool Tracker stopped.")
 
 if __name__ == "__main__":
     main()

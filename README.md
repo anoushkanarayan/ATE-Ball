@@ -10,6 +10,6 @@ python projection.py --projection
 ### Save the output to a video file
 python projection.py --output output.avi
 
-# Use a video file for testing
+### Use a video file for testing
 python projection.py --video videos/shot.mp4
 

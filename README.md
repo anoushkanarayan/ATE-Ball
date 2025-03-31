@@ -15,5 +15,5 @@ python projection.py --no-stitch
 python projection.py --output output.avi
 
 # Use a video file for testing
-python projection.py --video briannaYUH.mp4
+python projection.py --video videos/shot.mp4
 

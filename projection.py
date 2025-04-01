@@ -11,6 +11,7 @@ LOCKED_BOUNDS = [None, None]  # One for each camera
 LOCKED_TABLE_MASK = [None, None]  # One for each camera
 STITCHING_HOMOGRAPHY = None  # Homography matrix for stitching camera views
 SHARED_MARKERS = []  # ArUco markers visible in both camera feeds
+SHARED_CUE_BALL = None
 
 class LineProjectionSystem:
     def __init__(self, shared_data=None):
@@ -366,7 +367,7 @@ def detect_aruco_markers(frame, detector, camera_index=0):
     
     # If we have locked bounds and mask for this camera, use them
     if LOCKED_BOUNDS[camera_index] is not None and LOCKED_TABLE_MASK[camera_index] is not None:
-        # Still detect markers for stitching purposes
+        # Still detect markers for coordination purposes
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         markerCorners, markerIds, _ = detector.detectMarkers(gray)
         
@@ -375,7 +376,7 @@ def detect_aruco_markers(frame, detector, camera_index=0):
             # Draw the detected markers
             frame = cv2.aruco.drawDetectedMarkers(frame, markerCorners, markerIds)
             
-            # Store marker data for stitching
+            # Store marker data
             for i, (corners, marker_id) in enumerate(zip(markerCorners, markerIds)):
                 corners = corners.reshape((4, 2)).astype(int)
                 # Calculate center of marker
@@ -409,7 +410,7 @@ def detect_aruco_markers(frame, detector, camera_index=0):
     # Default table mask - whole frame
     table_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
     
-    # Store marker data for stitching
+    # Store marker data for coordination
     marker_data = []
     
     if markerIds is not None:
@@ -478,21 +479,18 @@ def detect_aruco_markers(frame, detector, camera_index=0):
     
     return frame, aruco_mask, bounds, table_mask, marker_data
 
-def compute_stitching_homography(markers1, markers2):
+def get_common_markers(markers1, markers2):
     """
-    Compute homography matrix to stitch two camera views.
+    Find common markers between two camera views.
     
     Args:
         markers1: Marker data from first camera
         markers2: Marker data from second camera
         
     Returns:
-        Homography matrix to transform points from second camera to first
+        List of common marker IDs
     """
     global SHARED_MARKERS
-    
-    # Find common markers between the two cameras
-    common_markers = []
     
     # Create dictionaries for fast lookup
     markers1_dict = {m['id']: m for m in markers1}
@@ -501,27 +499,27 @@ def compute_stitching_homography(markers1, markers2):
     # Find common marker IDs
     common_ids = set(markers1_dict.keys()).intersection(set(markers2_dict.keys()))
     
-    if len(common_ids) < 4:
-        print(f"Warning: Only {len(common_ids)} common markers found. At least 4 are recommended for accurate stitching.")
+    # Store shared markers for reference
+    SHARED_MARKERS = list(common_ids)
     
-    # Get marker centers
-    if common_ids:
-        src_points = np.array([markers2_dict[id]['center'] for id in common_ids], dtype=np.float32)
-        dst_points = np.array([markers1_dict[id]['center'] for id in common_ids], dtype=np.float32)
-        
-        # Store shared markers for reference
-        SHARED_MARKERS = list(common_ids)
-        
-        # Compute homography if we have enough points
-        if len(common_ids) >= 4:
-            H, _ = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
-            return H
-    
-    # If not enough common markers, return identity matrix
-    return np.eye(3, dtype=np.float32)
+    return common_ids
 
-def detect_white_ball(frame, aruco_mask, table_mask, bounds):
-    """Detect the white cue ball in the frame."""
+def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
+    """
+    Detect the white cue ball in the frame.
+    
+    Args:
+        frame: Input frame
+        aruco_mask: Mask for ArUco markers
+        table_mask: Mask for table area
+        bounds: Table boundaries
+        camera_index: Index of the camera (0 or 1)
+        
+    Returns:
+        Tuple of ((center_x, center_y), radius) and a confidence value
+    """
+    global SHARED_CUE_BALL
+    
     # Convert to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
@@ -558,9 +556,90 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds):
             ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
             
             if radius > 10:  # Minimum radius threshold
-                return (int(x), int(y)), int(radius)
+                # Calculate confidence based on circularity and size
+                area = cv2.contourArea(largest_contour)
+                perimeter = cv2.arcLength(largest_contour, True)
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                confidence = circularity * (radius / 30)  # Normalize by expected radius
+                
+                center_point = (int(x), int(y))
+                radius_int = int(radius)
+                
+                # Update shared cue ball info
+                update_shared_cue_ball(center_point, radius_int, confidence, camera_index)
+                
+                return (center_point, radius_int), confidence
     
-    return None, None
+    return None, 0.0
+
+def update_shared_cue_ball(center, radius, confidence, camera_index):
+    """
+    Update the shared cue ball information across cameras.
+    
+    Args:
+        center: Center point of the cue ball
+        radius: Radius of the cue ball
+        confidence: Detection confidence (0-1)
+        camera_index: Index of the camera (0 or 1)
+    """
+    global SHARED_CUE_BALL
+    
+    # Make sure we have a valid center point
+    if center is None or not isinstance(center, tuple) or len(center) != 2:
+        return
+        
+    if SHARED_CUE_BALL is None:
+        SHARED_CUE_BALL = {
+            'positions': [None, None],
+            'radii': [None, None],
+            'confidences': [0.0, 0.0],
+            'timestamp': time.time()
+        }
+    
+    # Update this camera's information
+    SHARED_CUE_BALL['positions'][camera_index] = center
+    SHARED_CUE_BALL['radii'][camera_index] = radius
+    SHARED_CUE_BALL['confidences'][camera_index] = confidence
+    SHARED_CUE_BALL['timestamp'] = time.time()
+    
+    # Clear old information (older than 0.5 seconds)
+    current_time = time.time()
+    if current_time - SHARED_CUE_BALL['timestamp'] > 0.5:
+        # Reset confidences for old detections
+        for i in range(2):
+            if i != camera_index:
+                SHARED_CUE_BALL['confidences'][i] = 0.0
+
+def get_best_cue_ball():
+    """
+    Get the best cue ball detection across cameras.
+    
+    Returns:
+        Tuple of (center, radius, camera_index) or (None, None, None)
+    """
+    global SHARED_CUE_BALL
+    
+    if SHARED_CUE_BALL is None:
+        return None, None, None
+    
+    # Find camera with highest confidence
+    max_confidence = 0.0
+    best_index = -1
+    
+    for i in range(2):
+        confidence = SHARED_CUE_BALL['confidences'][i]
+        if confidence > max_confidence:
+            max_confidence = confidence
+            best_index = i
+    
+    if best_index >= 0 and max_confidence > 0:
+        return (
+            SHARED_CUE_BALL['positions'][best_index],
+            SHARED_CUE_BALL['radii'][best_index],
+            best_index
+        )
+    
+    return None, None, None
 
 def detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball=None):
     """
@@ -818,7 +897,7 @@ def transform_point(point, homography=None):
     return (int(p_transformed[0]/p_transformed[2]), 
             int(p_transformed[1]/p_transformed[2]))
 
-def process_frame(frame, detector, camera_index=0, homography=None, projection_system=None):
+def process_frame(frame, detector, camera_index=0, projection_system=None):
     """
     Process a single frame, detect balls and trajectories.
     
@@ -826,7 +905,6 @@ def process_frame(frame, detector, camera_index=0, homography=None, projection_s
         frame: Input frame
         detector: ArUco marker detector
         camera_index: Camera index (0 or 1)
-        homography: Homography matrix for stitching
         projection_system: Optional LineProjectionSystem
     
     Returns:
@@ -840,8 +918,24 @@ def process_frame(frame, detector, camera_index=0, homography=None, projection_s
         frame, detector, camera_index
     )
     
-    # Detect cue ball
-    cue_ball, cue_radius = detect_white_ball(frame, aruco_mask, table_mask, bounds)
+    # Detect cue ball in this frame
+    cue_ball_this_frame, confidence = detect_white_ball(
+        frame, aruco_mask, table_mask, bounds, camera_index
+    )
+    
+    # Get the best cue ball detection across cameras
+    best_cue_ball, best_radius, best_camera = get_best_cue_ball()
+    
+    # Use the detected cue ball in this frame if available, otherwise use the shared one
+    if cue_ball_this_frame and isinstance(cue_ball_this_frame, tuple) and len(cue_ball_this_frame) == 2:
+        cue_ball = cue_ball_this_frame[0]
+        cue_radius = cue_ball_this_frame[1]
+    elif best_cue_ball:
+        cue_ball = best_cue_ball
+        cue_radius = best_radius if best_radius else 15  # default radius if not detected
+    else:
+        cue_ball = None
+        cue_radius = 15  # default radius if not detected
     
     # Detect colored balls
     colored_balls = detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball)
@@ -865,31 +959,36 @@ def process_frame(frame, detector, camera_index=0, homography=None, projection_s
     trajectories = None
     
     # Draw cue ball and detect cue orientation
-    if cue_ball:
-        cv2.circle(frame, cue_ball, cue_radius, (0, 255, 0), 2)
+    if cue_ball and isinstance(cue_ball, tuple) and len(cue_ball) == 2:
+        # If this is not the camera that detected the cue ball, draw with a different color
+        cue_color = (0, 255, 0) if camera_index == best_camera else (0, 165, 255)
+        
+        cv2.circle(frame, cue_ball, cue_radius, cue_color, 2)
         cv2.putText(frame, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, cue_color, 2)
         
-        # Detect cue orientation
-        cue_line, is_pointing_at_ball = detect_cue_orientation(
-            frame, cue_ball, aruco_mask, table_mask
-        )
-        
-        # Only process if cue is pointing at the ball
-        if cue_line and is_pointing_at_ball:
-            vx, vy, x0, y0 = cue_line
+        # Only detect cue orientation if this is the camera that best sees the cue ball
+        if camera_index == best_camera or best_camera is None:
+            # Detect cue orientation
+            cue_line, is_pointing_at_ball = detect_cue_orientation(
+                frame, cue_ball, aruco_mask, table_mask
+            )
             
-            # Find target ball
-            target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
-            
-            # If no target ball, draw regular cue line
-            if not target_ball:
-                # Calculate end point
-                end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
-                start_point = (int(x0), int(y0))
+            # Only process if cue is pointing at the ball
+            if cue_line and is_pointing_at_ball:
+                vx, vy, x0, y0 = cue_line
                 
-                # Draw line
-                cv2.line(frame, start_point, end_point, (255, 255, 255), 2)
+                # Find target ball
+                target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
+                
+                # If no target ball, draw regular cue line
+                if not target_ball:
+                    # Calculate end point
+                    end_point = (int(x0 + vx * 400), int(y0 + vy * 400))
+                    start_point = (int(x0), int(y0))
+                    
+                    # Draw line
+                    cv2.line(frame, start_point, end_point, (255, 255, 255), 2)
     
     # If target ball found, draw trajectory
     if target_ball:
@@ -938,71 +1037,42 @@ def process_frame(frame, detector, camera_index=0, homography=None, projection_s
     
     # Update projection system if provided
     if projection_system is not None and trajectories is not None:
-        # Extract trajectory lines with appropriate transformation
-        lines = extract_lines_from_trajectories(trajectories, homography if camera_index == 1 else None)
+        # Extract trajectory lines
+        lines = extract_lines_from_trajectories(trajectories)
         
         # Update projection system
         projection_system.update_lines(lines)
     
-    # Draw camera index on frame
+    # Draw camera index and common marker info on frame
     cv2.putText(frame, f"Camera {camera_index+1}", (20, 30),
                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+    
+    # Add info about shared markers
+    if SHARED_MARKERS:
+        cv2.putText(frame, f"Common Markers: {len(SHARED_MARKERS)}", (20, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 140, 255), 2)
     
     # Return processed frame and detection data
     return frame, marker_data, all_detected_balls, trajectories
 
-def create_stitched_view(frame1, frame2, homography):
-    """
-    Create a stitched view of two camera frames.
-    
-    Args:
-        frame1: First camera frame
-        frame2: Second camera frame
-        homography: Homography matrix to transform frame2 to frame1's perspective
-        
-    Returns:
-        Stitched frame
-    """
-    # Get dimensions
-    h1, w1 = frame1.shape[:2]
-    h2, w2 = frame2.shape[:2]
-    
-    # Warp the second frame to align with the first
-    warped_frame2 = cv2.warpPerspective(frame2, homography, (w1, h1))
-    
-    # Create a mask to blend the overlapping regions
-    mask = np.zeros((h1, w1), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, np.array([[0, 0], [w1//2, 0], [w1//2, h1], [0, h1]]), 255)
-    
-    # Combine the frames
-    stitched = np.copy(warped_frame2)
-    stitched[mask == 255] = frame1[mask == 255]
-    
-    # Draw a line at the seam
-    cv2.line(stitched, (w1//2, 0), (w1//2, h1), (0, 255, 255), 1)
-    
-    return stitched
-
 def main():
-    """Main function for the Pool Table Tracker with Projection."""
+    """Main function for the Pool Table Tracker with Side-by-Side View."""
+    global SHARED_CUE_BALL, SHARED_MARKERS, LOCKED_BOUNDS, LOCKED_TABLE_MASK
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Pool Table Tracker with Projection')
+    parser = argparse.ArgumentParser(description='Pool Table Tracker with Side-by-Side View')
     parser.add_argument('--video', type=str, default='', help='Path to video file')
     parser.add_argument('--cam1', type=int, default=0, help='First camera index (default: 0)')
     parser.add_argument('--cam2', type=int, default=2, help='Second camera index (default: 2)')
     parser.add_argument('--output', type=str, default='', help='Path to save output video')
     parser.add_argument('--projection', action='store_true', help='Enable line projection')
     parser.add_argument('--use-matplotlib', action='store_true', help='Use Matplotlib for projection')
-    parser.add_argument('--no-stitch', action='store_true', help='Disable stitching, show side-by-side')
     args = parser.parse_args()
     
     if args.video:
-        print("Starting Pool Table Tracker with Projection using video...")
+        print("Starting Pool Table Tracker using video file...")
     else:
-        print("Starting Dual Camera Pool Table Stitcher with Projection...")
+        print("Starting Dual Camera Pool Table Tracker with Side-by-Side View...")
     
-
-
     # Initialize video capture
     if args.video:
         # When using a video file, treat it as a single camera input
@@ -1038,15 +1108,9 @@ def main():
         frame_width2 = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height2 = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Combined dimensions for dual camera setup
-        if args.no_stitch:
-            # Side-by-side view
-            combined_width = frame_width1 + frame_width2
-            combined_height = max(frame_height1, frame_height2)
-        else:
-            # Stitched view - approximately 1.5x the width of one camera
-            combined_width = int(frame_width1 * 1.5)
-            combined_height = frame_height1
+        # Combined dimensions for side-by-side display
+        combined_width = frame_width1 + frame_width2
+        combined_height = max(frame_height1, frame_height2)
     
     # Estimated pool table dimensions (for projection)
     table_width = combined_width
@@ -1076,25 +1140,26 @@ def main():
     # Initialize line projection system
     projection_system = None
     if args.projection:
-        shared_data = {
-            'frame_size': (combined_width, combined_height),
-            'table_dimensions': (table_width, table_height)
-        }
-        projection_system = LineProjectionSystem(shared_data)
-        projection_system.run(use_matplotlib=args.use_matplotlib)
-        print("Line Projection System initialized.")
+        try:
+            shared_data = {
+                'frame_size': (combined_width, combined_height),
+                'table_dimensions': (table_width, table_height)
+            }
+            projection_system = LineProjectionSystem(shared_data)
+            projection_system.run(use_matplotlib=args.use_matplotlib)
+            print("Line Projection System initialized.")
+        except Exception as e:
+            print(f"Error initializing projection system: {e}")
+            projection_system = None
     
     # Create windows
     if args.video:
         window_title = "Pool Tracker - Video"
     else:
-        window_title = "Dual Camera Pool Tracker"
+        window_title = "Dual Camera Pool Tracker - Side by Side"
     
     cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_title, combined_width, combined_height)
-    
-    # Variable to store homography matrix
-    homography = None
     
     try:
         while True:
@@ -1106,7 +1171,7 @@ def main():
             
             # Process first frame
             processed_frame1, markers1, balls1, trajectories1 = process_frame(
-                frame1, detector, 0, None, projection_system
+                frame1, detector, 0, projection_system
             )
             
             if args.video:
@@ -1121,38 +1186,46 @@ def main():
                 
                 # Process second frame
                 processed_frame2, markers2, balls2, trajectories2 = process_frame(
-                    frame2, detector, 1, homography, projection_system
+                    frame2, detector, 1, projection_system
                 )
                 
-                # Compute homography if enough markers are detected
+                # Find common markers between cameras
                 if markers1 and markers2:
-                    homography = compute_stitching_homography(markers1, markers2)
+                    common_markers = get_common_markers(markers1, markers2)
+                    if common_markers:
+                        print(f"Common markers: {common_markers}")
                 
-                # Create output frame
-                if args.no_stitch or homography is None:
-                    # Side-by-side view
-                    max_height = max(frame_height1, frame_height2)
-                    
-                    # Resize frames to have the same height
-                    scale1 = max_height / frame_height1
-                    scale2 = max_height / frame_height2
-                    
-                    new_width1 = int(frame_width1 * scale1)
-                    new_width2 = int(frame_width2 * scale2)
-                    
-                    resized_frame1 = cv2.resize(processed_frame1, (new_width1, max_height))
-                    resized_frame2 = cv2.resize(processed_frame2, (new_width2, max_height))
-                    
-                    # Combine side by side
-                    combined_frame = np.zeros((max_height, new_width1 + new_width2, 3), dtype=np.uint8)
-                    combined_frame[:, :new_width1] = resized_frame1
-                    combined_frame[:, new_width1:] = resized_frame2
-                    
-                    # Draw dividing line
-                    cv2.line(combined_frame, (new_width1, 0), (new_width1, max_height), (0, 255, 255), 2)
-                else:
-                    # Create stitched view
-                    combined_frame = create_stitched_view(processed_frame1, processed_frame2, homography)
+                # Create side-by-side view
+                max_height = max(frame_height1, frame_height2)
+                
+                # Resize frames to have the same height
+                scale1 = max_height / frame_height1
+                scale2 = max_height / frame_height2
+                
+                new_width1 = int(frame_width1 * scale1)
+                new_width2 = int(frame_width2 * scale2)
+                
+                resized_frame1 = cv2.resize(processed_frame1, (new_width1, max_height))
+                resized_frame2 = cv2.resize(processed_frame2, (new_width2, max_height))
+                
+                # Combine side by side
+                combined_frame = np.zeros((max_height, new_width1 + new_width2, 3), dtype=np.uint8)
+                combined_frame[:, :new_width1] = resized_frame1
+                combined_frame[:, new_width1:] = resized_frame2
+                
+                # Draw dividing line
+                cv2.line(combined_frame, (new_width1, 0), (new_width1, max_height), (0, 255, 255), 2)
+                
+                # Draw information about common markers and shared cue ball
+                cv2.putText(combined_frame, f"Common Markers: {len(SHARED_MARKERS)}", 
+                           (10, max_height - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                
+                # Get current best cue ball
+                best_cue_ball, best_radius, best_camera = get_best_cue_ball()
+                if best_cue_ball:
+                    camera_text = f"Camera {best_camera + 1}"
+                    cv2.putText(combined_frame, f"Cue Ball: {camera_text}", 
+                               (10, max_height - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             # Display frame
             cv2.imshow(window_title, combined_frame)
@@ -1189,14 +1262,18 @@ def main():
         if output_writer is not None:
             output_writer.release()
         
-        if projection_system is not None:
-            projection_system.stop()
+        try:
+            if projection_system is not None:
+                projection_system.stop()
+        except Exception as e:
+            print(f"Error stopping projection system: {e}")
         
-        cv2.destroyAllWindows()
-        if args.video:
-            print("Pool Tracker stopped.")
-        else:
-            print("Dual Camera Pool Table Stitcher stopped.")
+        try:
+            cv2.destroyAllWindows()
+        except Exception as e:
+            print(f"Error destroying windows: {e}")
+            
+        print("Pool Tracker stopped.")
 
 if __name__ == "__main__":
     main()

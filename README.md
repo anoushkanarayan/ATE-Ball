@@ -13,3 +13,18 @@ python projection.py --output output.avi
 ### Use a video file for testing
 python projection.py --video videos/shot.mp4
 
+- tell code that there is only one cue ball, even if its picked up by both cameras
+
+- cue ball moves fast and often, make sure its position is rechecked often
+
+- reflect projection window 180 degrees
+
+- automatically full screen projection on board
+
+- make sure projected line disappears when no longer picking up a line
+
+- projection needs to tweak more, projection from camera feed doesnt update as often as projection view
+
+- make sure straight lines are projected as well as three lines
+
+

@@ -910,6 +910,9 @@ def process_frame(frame, detector, camera_index=0, projection_system=None):
     Returns:
         Tuple of (processed frame, marker data, detected balls, trajectories)
     """
+    # Flip the frame 180 degrees
+    frame = cv2.rotate(frame, cv2.ROTATE_180)
+    
     # Make a copy for visualization
     original_frame = frame.copy()
     

@@ -107,7 +107,7 @@ class LineProjectionSystem:
         
         # Draw a green rectangle for the table boundary
         cv2.rectangle(projection_frame, (0, 0), (self.table_width, self.table_height), 
-                      (0, 100, 0), 2)
+                    (0, 100, 0), 2)
         
         # Get current detected lines with thread lock
         with self.lock:
@@ -119,7 +119,15 @@ class LineProjectionSystem:
             # Draw each line in white
             for x1, y1, x2, y2 in current_lines:
                 cv2.line(projection_frame, (int(x1), int(y1)), (int(x2), int(y2)), 
-                         (255, 255, 255), 5)
+                        (255, 255, 255), 5)
+                
+        left_half = projection_frame[:, :self.table_width//2].copy()
+        right_half = projection_frame[:, self.table_width//2:].copy()
+        projection_frame[:, :self.table_width//2] = right_half
+        projection_frame[:, self.table_width//2:] = left_half
+        
+        # Rotate projection frame 180 degrees  <-- THIS IS THE NEW LINE I ADDED
+        projection_frame = cv2.rotate(projection_frame, cv2.ROTATE_180)
             
         return projection_frame
         
@@ -912,7 +920,7 @@ def process_frame(frame, detector, camera_index=0, projection_system=None):
     """
     # Flip the frame 180 degrees
     frame = cv2.rotate(frame, cv2.ROTATE_180)
-    
+
     # Make a copy for visualization
     original_frame = frame.copy()
     

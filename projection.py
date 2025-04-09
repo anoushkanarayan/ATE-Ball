@@ -69,6 +69,7 @@ class LineProjectionSystem:
             for x1, y1, x2, y2 in lines:
                 cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
         #return cv2.rotate(frame, cv2.ROTATE_180)
+        return frame
 
     def run_opencv_display(self):
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
@@ -140,6 +141,7 @@ def main():
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW)
+    #cap.rotate(frame, cv2.ROTATE_180)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 

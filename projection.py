@@ -5,12 +5,23 @@ import threading
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import time
+from helpers import (
+    detect_aruco_markers, detect_white_ball, update_shared_cue_ball, get_best_cue_ball,
+    detect_colored_balls, get_color_name, detect_cue_orientation, find_target_ball,
+    calculate_advanced_collision, extract_lines_from_trajectories
+)
 
-# Global variables
-LOCKED_BOUNDS = None
-LOCKED_TABLE_MASK = None
-SHARED_CUE_BALL = None
+LOCKED_BOUNDS = [None]
+LOCKED_TABLE_MASK = [None]
+SHARED_CUE_BALL = {
+    'positions': [None],
+    'radii': [None],
+    'confidences': [0.0],
+    'timestamp': time.time()
+}
+SHARED_MARKERS = []
 
+# === LineProjectionSystem ===
 class LineProjectionSystem:
     def __init__(self, table_dimensions=(1280, 640)):
         self.table_width, self.table_height = table_dimensions
@@ -57,7 +68,7 @@ class LineProjectionSystem:
         if has_lines:
             for x1, y1, x2, y2 in lines:
                 cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
-        return cv2.rotate(frame, cv2.ROTATE_180)
+        #return cv2.rotate(frame, cv2.ROTATE_180)
 
     def run_opencv_display(self):
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
@@ -87,8 +98,41 @@ class LineProjectionSystem:
     def __del__(self):
         self.stop()
 
-# Define your frame processing logic as needed here.
+# === Frame Processing ===
+def process_frame(frame, detector, projection_system=None):
+    frame = cv2.rotate(frame, cv2.ROTATE_180)
+    frame, aruco_mask, bounds, table_mask, marker_data = detect_aruco_markers(frame, detector, 0)
+    cue_ball_data, confidence = detect_white_ball(frame, aruco_mask, table_mask, bounds, 0)
 
+    cue_ball = cue_ball_data[0] if cue_ball_data else None
+    cue_radius = cue_ball_data[1] if cue_ball_data else 15
+
+    colored_balls = detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball)
+    all_detected_balls = []
+    for ball_center, ball_radius, ball_color in colored_balls:
+        cv2.circle(frame, ball_center, ball_radius, (0, 0, 255), 2)
+        color_name = get_color_name(ball_color)
+        all_detected_balls.append((ball_center, ball_radius, color_name))
+
+    trajectories = None
+    if cue_ball:
+        cv2.circle(frame, cue_ball, cue_radius, (0, 255, 0), 2)
+        cv2.putText(frame, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cue_line, is_pointing = detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask)
+        if cue_line and is_pointing:
+            vx, vy, _, _ = cue_line
+            target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
+            if target_ball:
+                center, radius, _ = target_ball
+                trajectories = calculate_advanced_collision(cue_ball, center, cue_radius, radius, (vx, vy))
+
+    if projection_system and trajectories:
+        lines = extract_lines_from_trajectories(trajectories)
+        projection_system.update_lines(lines)
+
+    return frame
+
+# === Main ===
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cam', type=int, default=0, help='Camera index (default: 0)')
@@ -98,6 +142,7 @@ def main():
     cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+
     if not cap.isOpened():
         print("Error: Could not open camera.")
         return
@@ -109,20 +154,19 @@ def main():
     if projection_system:
         projection_system.run()
 
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    parameters = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+
+    cv2.namedWindow("Camera Feed", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Camera Feed", table_width, table_height)
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
-        # Flip and process frame here as needed
-        frame = cv2.rotate(frame, cv2.ROTATE_180)
-
-        # Dummy logic for updating lines
-        if projection_system:
-            dummy_lines = [(100, 100, 200, 200)]
-            projection_system.update_lines(dummy_lines)
-
-        cv2.imshow("Camera Feed", frame)
+        processed_frame = process_frame(frame, detector, projection_system)
+        cv2.imshow("Camera Feed", processed_frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 

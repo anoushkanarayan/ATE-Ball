@@ -13,8 +13,6 @@ python projection.py --output output.avi
 ### Use a video file for testing
 python projection.py --video videos/shot.mp4
 
-- tell code that there is only one cue ball, even if its picked up by both cameras
-
 - cue ball moves fast and often, make sure its position is rechecked often
 
 - reflect projection window 180 degrees

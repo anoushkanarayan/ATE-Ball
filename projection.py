@@ -67,7 +67,7 @@ class LineProjectionSystem:
             has_lines = self.has_lines
         if has_lines:
             for x1, y1, x2, y2 in lines:
-                cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
+                cv2.line(frame, (int(x1-70), int(y1+30)), (int(x2-70), int(y2+30)), (255, 255, 255), 5)
         #return cv2.rotate(frame, cv2.ROTATE_180)
         return frame
 

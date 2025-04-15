@@ -8,11 +8,7 @@ This repository contains the code for the 2024-2025 USC Makers project, ATE Ball
 python projection.py --projection
 
 ### Use a video file for testing
-python projection.py --video videos/shot.mp4
-
-- add video testing
-
-- cue ball moves fast and often, make sure its position is rechecked often
+python projection.py --video videos/shot.mp4 --projection
 
 - crop to aruco tags on window pane
 

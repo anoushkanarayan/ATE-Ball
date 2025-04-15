@@ -39,6 +39,7 @@ class LineProjectionSystem:
         self.has_lines = False
         self.running = True
         self.window_name = "Projection View"
+        self.display_thread = None  # Initialize to None
 
     def update_lines(self, lines):
         with self.lock:
@@ -67,9 +68,8 @@ class LineProjectionSystem:
             has_lines = self.has_lines
         if has_lines:
             for x1, y1, x2, y2 in lines:
-                cv2.line(frame, (int(x1-70), int(y1+30)), (int(x2-70), int(y2+30)), (255, 255, 255), 5)
-        #return cv2.rotate(frame, cv2.ROTATE_180)
-        return frame
+                cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
+        return cv2.rotate(frame, cv2.ROTATE_180)
 
     def run_opencv_display(self):
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
@@ -80,98 +80,167 @@ class LineProjectionSystem:
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 self.running = False
                 break
-            time.sleep(0.03)
+            time.sleep(0.03)  # Small delay to reduce CPU usage
         cv2.destroyWindow(self.window_name)
 
     def run(self):
-        self.display_thread = threading.Thread(target=self.run_opencv_display)
-        self.display_thread.daemon = True
-        self.display_thread.start()
+        # Only start the thread if it's not already running
+        if self.display_thread is None or not self.display_thread.is_alive():
+            self.display_thread = threading.Thread(target=self.run_opencv_display)
+            self.display_thread.daemon = True
+            self.display_thread.start()
 
     def stop(self):
         self.running = False
-        if hasattr(self, 'display_thread') and self.display_thread.is_alive():
+        if hasattr(self, 'display_thread') and self.display_thread is not None and self.display_thread.is_alive():
             self.display_thread.join(timeout=1.0)
+            self.display_thread = None  # Reset thread reference
         if hasattr(self, 'fig') and plt.fignum_exists(self.fig.number):
             plt.close(self.fig)
-        cv2.destroyWindow(self.window_name)
+        cv2.destroyAllWindows()  # Close all windows to be safe
 
     def __del__(self):
         self.stop()
 
 # === Frame Processing ===
 def process_frame(frame, detector, projection_system=None):
-    frame = cv2.rotate(frame, cv2.ROTATE_180)
-    frame, aruco_mask, bounds, table_mask, marker_data = detect_aruco_markers(frame, detector, 0)
-    cue_ball_data, confidence = detect_white_ball(frame, aruco_mask, table_mask, bounds, 0)
+    # Make a copy of the frame to avoid modification issues
+    frame_copy = frame.copy()
+    
+    # Apply rotation (needed for both camera and video)
+    frame_copy = cv2.rotate(frame_copy, cv2.ROTATE_180)
+    
+    # Process the frame
+    frame_copy, aruco_mask, bounds, table_mask, marker_data = detect_aruco_markers(frame_copy, detector, 0)
+    cue_ball_data, confidence = detect_white_ball(frame_copy, aruco_mask, table_mask, bounds, 0)
 
     cue_ball = cue_ball_data[0] if cue_ball_data else None
     cue_radius = cue_ball_data[1] if cue_ball_data else 15
 
-    colored_balls = detect_colored_balls(frame, aruco_mask, table_mask, bounds, cue_ball)
+    colored_balls = detect_colored_balls(frame_copy, aruco_mask, table_mask, bounds, cue_ball)
     all_detected_balls = []
     for ball_center, ball_radius, ball_color in colored_balls:
-        cv2.circle(frame, ball_center, ball_radius, (0, 0, 255), 2)
+        cv2.circle(frame_copy, ball_center, ball_radius, (0, 0, 255), 2)
         color_name = get_color_name(ball_color)
         all_detected_balls.append((ball_center, ball_radius, color_name))
 
     trajectories = None
     if cue_ball:
-        cv2.circle(frame, cue_ball, cue_radius, (0, 255, 0), 2)
-        cv2.putText(frame, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        cue_line, is_pointing = detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask)
+        cv2.circle(frame_copy, cue_ball, cue_radius, (0, 255, 0), 2)
+        cv2.putText(frame_copy, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        cue_line, is_pointing = detect_cue_orientation(frame_copy, cue_ball, aruco_mask, table_mask)
         if cue_line and is_pointing:
             vx, vy, _, _ = cue_line
             target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
             if target_ball:
                 center, radius, _ = target_ball
                 trajectories = calculate_advanced_collision(cue_ball, center, cue_radius, radius, (vx, vy))
+                
+                # Debug output to verify trajectory calculation
+                print(f"Calculated trajectories: {trajectories is not None}")
 
-    if projection_system and trajectories:
-        lines = extract_lines_from_trajectories(trajectories)
+    # Always update projection lines if system exists, even with empty trajectories
+    if projection_system:
+        lines = extract_lines_from_trajectories(trajectories) if trajectories else []
+        
+        # Debug output
+        #print(f"Extracted lines: {len(lines) if lines else 0}")
+        
         projection_system.update_lines(lines)
 
-    return frame
+    return frame_copy
 
 # === Main ===
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cam', type=int, default=0, help='Camera index (default: 0)')
+    parser.add_argument('--video', type=str, help='Path to video file instead of camera')
     parser.add_argument('--projection', action='store_true', help='Enable line projection')
     args = parser.parse_args()
 
-    cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW)
-    #cap.rotate(frame, cv2.ROTATE_180)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    # Determine if we're using a camera or video file
+    if args.video:
+        cap = cv2.VideoCapture(args.video)
+        if not cap.isOpened():
+            print(f"Error: Could not open video file {args.video}")
+            return
+    else:
+        cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        if not cap.isOpened():
+            print("Error: Could not open camera.")
+            return
 
-    if not cap.isOpened():
-        print("Error: Could not open camera.")
-        return
-
+    # Get frame dimensions
     table_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     table_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"Table dimensions: {table_width}x{table_height}")
 
-    projection_system = LineProjectionSystem((table_width, table_height)) if args.projection else None
-    if projection_system:
+    # Always create projection system if --projection is specified
+    projection_system = None
+    if args.projection:
+        projection_system = LineProjectionSystem((table_width, table_height))
         projection_system.run()
 
+    # Set up ArUco detector
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     parameters = cv2.aruco.DetectorParameters()
     detector = cv2.aruco.ArucoDetector(dictionary, parameters)
 
+    # Camera feed window
     cv2.namedWindow("Camera Feed", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Camera Feed", table_width, table_height)
 
+    # Add playback controls for video files
+    paused = False
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        processed_frame = process_frame(frame, detector, projection_system)
-        cv2.imshow("Camera Feed", processed_frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        if not paused or args.video is None:
+            ret, frame = cap.read()
+            if not ret:
+                # If video file ends, loop back to beginning
+                if args.video:
+                    print("Restarting video from beginning")
+                    cap = cv2.VideoCapture(args.video)
+                    ret, frame = cap.read()
+                    if not ret:
+                        print("Failed to restart video")
+                        break
+                else:
+                    print("Camera disconnected")
+                    break
 
+        # Process the frame
+        processed_frame = process_frame(frame, detector, projection_system)
+        
+        # Display the processed frame
+        cv2.imshow("Camera Feed", processed_frame)
+        
+        # If we're using a projection system but the separate window isn't showing,
+        # make sure it's running (could have been closed by user)
+        if projection_system:
+            projection_system.run()  # This will check if thread exists
+        
+        # Handle keyboard controls
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            print("Quit requested")
+            break
+        elif key == ord(' ') and args.video:  # Spacebar to pause/play
+            paused = not paused
+            print(f"Video {'paused' if paused else 'playing'}")
+        elif key == ord('n') and args.video and paused:  # Next frame when paused
+            ret, frame = cap.read()
+            if not ret:
+                cap = cv2.VideoCapture(args.video)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+            print("Next frame")
+
+    # Cleanup
     cap.release()
     cv2.destroyAllWindows()
     if projection_system:

@@ -16,7 +16,7 @@ python projection.py --video videos/shot.mp4
 
 - crop to aruco tags on window pane
 
-- automatically full screen projection on board
+- add lines to camera pane
 
 - make sure projected line disappears when no longer picking up a line
 

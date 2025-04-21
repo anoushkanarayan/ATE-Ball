@@ -16,6 +16,6 @@ python projection.py --video videos/shot.mp4 --projection
 
 - make sure projected line disappears when no longer picking up a line
 
-- make sure straight lines are projected as well as three lines
+- make sure straight lines are projected as well as three lines 
 
 

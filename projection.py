@@ -145,6 +145,22 @@ def process_frame(frame, detector, projection_system=None):
                 
                 # Debug output to verify trajectory calculation
                 print(f"Calculated trajectories: {trajectories is not None}")
+            else:
+                # No target ball found, but cue is pointing at the cue ball
+                # Create a simple straight line trajectory
+                extension = 500  # Length of the projected line
+                end_x = int(cue_ball[0] + vx * extension)
+                end_y = int(cue_ball[1] + vy * extension)
+                
+                # Create a simple trajectory dictionary with just a straight line
+                trajectories = {
+                    'will_collide': False,
+                    'cue_initial': (int(cue_ball[0]), int(cue_ball[1])),
+                    'cue_path': [(int(cue_ball[0]), int(cue_ball[1])), (end_x, end_y)]
+                }
+                
+                # Draw the straight line on the frame
+                cv2.line(frame_copy, cue_ball, (end_x, end_y), (255, 255, 255), 2)
 
     # Always update projection lines if system exists, even with empty trajectories
     if projection_system:

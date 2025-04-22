@@ -102,6 +102,11 @@ class LineProjectionSystem:
     def __del__(self):
         self.stop()
 
+    def get_current_lines(self):
+        """Return the current projection lines for drawing on the camera feed."""
+        with self.lock:
+            return self.detected_lines.copy(), self.has_lines
+
 # === Frame Processing ===
 def process_frame(frame, detector, projection_system=None):
     # Make a copy of the frame to avoid modification issues
@@ -149,6 +154,12 @@ def process_frame(frame, detector, projection_system=None):
         #print(f"Extracted lines: {len(lines) if lines else 0}")
         
         projection_system.update_lines(lines)
+        
+        # Draw projection lines directly on the camera feed
+        current_lines, has_lines = projection_system.get_current_lines()
+        if has_lines:
+            for x1, y1, x2, y2 in current_lines:
+                cv2.line(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 3)
 
     return frame_copy
 

@@ -225,6 +225,9 @@ def main():
 
         # Process the frame
         processed_frame = process_frame(frame, detector, projection_system)
+
+        # TOGGLE THIS ON AND OFF FOR DEBUGGING PURPOSES
+        #processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_180)
         
         # Display the processed frame
         cv2.imshow("Camera Feed", processed_frame)

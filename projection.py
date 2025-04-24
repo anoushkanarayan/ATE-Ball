@@ -113,7 +113,7 @@ def process_frame(frame, detector, projection_system=None):
     frame_copy = frame.copy()
     
     # Apply rotation (needed for both camera and video)
-    frame_copy = cv2.rotate(frame_copy, cv2.ROTATE_180)
+    #frame_copy = cv2.rotate(frame_copy, cv2.ROTATE_180)
     
     # Process the frame
     frame_copy, aruco_mask, bounds, table_mask, marker_data = detect_aruco_markers(frame_copy, detector, 0)

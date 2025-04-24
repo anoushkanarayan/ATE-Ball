@@ -44,26 +44,59 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
                     int(p_transformed[1]/p_transformed[2]))
         return point
     
+    def extend_line(start_point, end_point, extension=60):
+        """Extend a line by the specified number of pixels."""
+        # Calculate direction vector
+        dx = end_point[0] - start_point[0]
+        dy = end_point[1] - start_point[1]
+        
+        # Normalize
+        magnitude = (dx**2 + dy**2)**0.5
+        if magnitude > 0:
+            dx = dx / magnitude
+            dy = dy / magnitude
+        
+        # Extend end point
+        extended_end = (
+            int(end_point[0] + dx * extension),
+            int(end_point[1] + dy * extension)
+        )
+        
+        return extended_end
+    
     if trajectories.get('will_collide', False):
-        # Cue stick to collision point
+        # Original collision point (for prong calculations)
+        orig_collision = transform_point(trajectories['collision_point'])
+        
+        # Cue stick to collision point - EXTEND THIS LINE by 40px
         start = transform_point(trajectories['cue_path'][0])
-        end = transform_point(trajectories['collision_point'])
-        lines.append((start[0], start[1], end[0], end[1]))
+        extended_collision = extend_line(start, orig_collision)
         
-        # Cue ball after collision
-        start = transform_point(trajectories['collision_point']) 
-        end = transform_point(trajectories['cue_path'][3])
-        lines.append((start[0], start[1], end[0], end[1]))
+        # Add the extended stem line
+        lines.append((start[0], start[1], extended_collision[0], extended_collision[1]))
         
-        # Target ball trajectory
-        start = transform_point(trajectories['collision_point'])
-        end = transform_point(trajectories['target_path'][1])
-        lines.append((start[0], start[1], end[0], end[1]))
+        # Get original trajectories for the prongs
+        cue_after = transform_point(trajectories['cue_path'][3])
+        target_after = transform_point(trajectories['target_path'][1])
+        
+        # Calculate the prong vector directions exactly as they were
+        cue_vector = (cue_after[0] - orig_collision[0], cue_after[1] - orig_collision[1])
+        target_vector = (target_after[0] - orig_collision[0], target_after[1] - orig_collision[1])
+        
+        # Apply these same vectors but starting from the extended collision point
+        new_cue_end = (extended_collision[0] + cue_vector[0], extended_collision[1] + cue_vector[1])
+        new_target_end = (extended_collision[0] + target_vector[0], extended_collision[1] + target_vector[1])
+        
+        # Add the two prong lines with the original vector math
+        lines.append((extended_collision[0], extended_collision[1], new_cue_end[0], new_cue_end[1]))
+        lines.append((extended_collision[0], extended_collision[1], new_target_end[0], new_target_end[1]))
     else:
         # No collision - just the straight path
         start = transform_point(trajectories['cue_path'][0])
         end = transform_point(trajectories['cue_path'][1])
-        lines.append((start[0], start[1], end[0], end[1]))
+        # Extend this line too since it's the stem line in this case
+        extended_end = extend_line(start, end)
+        lines.append((start[0], start[1], extended_end[0], extended_end[1]))
     
     return lines
 

@@ -158,8 +158,8 @@ def calculate_table_center(marker_data):
     centers = [marker['center'] for marker in marker_data]
     
     # Calculate the average of all marker centers
-    center_x = int(sum(c[0] for c in centers) / len(centers))
-    center_y = int(sum(c[1] for c in centers) / len(centers))
+    center_x = int(sum(c[0] for c in centers) / len(centers)) + 30
+    center_y = int(sum(c[1] for c in centers) / len(centers)) - 85
     
     calculated_center = (center_x, center_y)
     

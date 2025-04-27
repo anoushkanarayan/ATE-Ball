@@ -7,13 +7,5 @@ This repository contains the code for the 2024-2025 USC Makers project, ATE Ball
 ### With projection enabled
 python projection.py --projection
 
-### Use a video file for testing
-python projection.py --video videos/shot.mp4 --projection
-
-- crop to aruco tags on window pane
-
-- make sure projected line disappears when no longer picking up a line
-
-- make sure straight lines are projected as well as three lines 
-
+When running this program, the projection pane is rotated 180 degrees from the camera pane. This accounts for the fact that the projector is facing the opposite direction as the camera on the table.
 

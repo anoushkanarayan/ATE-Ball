@@ -9,9 +9,9 @@ import time
 LOCKED_BOUNDS = [None]
 LOCKED_TABLE_MASK = [None]
 SHARED_CUE_BALL = {
-    'positions': [None],
-    'radii': [None],
-    'confidences': [0.0],
+    'positions': [None, None],  # One position per camera
+    'radii': [None, None],      # One radius per camera
+    'confidences': [0.0, 0.0],  # One confidence value per camera
     'timestamp': time.time()
 }
 SHARED_MARKERS = []
@@ -44,26 +44,59 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
                     int(p_transformed[1]/p_transformed[2]))
         return point
     
+    def extend_line(start_point, end_point, extension=30):
+        """Extend a line by the specified number of pixels."""
+        # Calculate direction vector
+        dx = end_point[0] - start_point[0]
+        dy = end_point[1] - start_point[1]
+        
+        # Normalize
+        magnitude = (dx**2 + dy**2)**0.5
+        if magnitude > 0:
+            dx = dx / magnitude
+            dy = dy / magnitude
+        
+        # Extend end point
+        extended_end = (
+            int(end_point[0] + dx * extension),
+            int(end_point[1] + dy * extension)
+        )
+        
+        return extended_end
+    
     if trajectories.get('will_collide', False):
-        # Cue stick to collision point
+        # Original collision point (for prong calculations)
+        orig_collision = transform_point(trajectories['collision_point'])
+        
+        # Cue stick to collision point - EXTEND THIS LINE by 40px
         start = transform_point(trajectories['cue_path'][0])
-        end = transform_point(trajectories['collision_point'])
-        lines.append((start[0], start[1], end[0], end[1]))
+        extended_collision = extend_line(start, orig_collision)
         
-        # Cue ball after collision
-        start = transform_point(trajectories['collision_point']) 
-        end = transform_point(trajectories['cue_path'][3])
-        lines.append((start[0], start[1], end[0], end[1]))
+        # Add the extended stem line
+        lines.append((start[0]+70, start[1]+40, extended_collision[0]+70, extended_collision[1]+40))
         
-        # Target ball trajectory
-        start = transform_point(trajectories['collision_point'])
-        end = transform_point(trajectories['target_path'][1])
-        lines.append((start[0], start[1], end[0], end[1]))
+        # Get original trajectories for the prongs
+        cue_after = transform_point(trajectories['cue_path'][3])
+        target_after = transform_point(trajectories['target_path'][1])
+        
+        # Calculate the prong vector directions exactly as they were
+        cue_vector = (cue_after[0] - orig_collision[0], cue_after[1] - orig_collision[1])
+        target_vector = (target_after[0] - orig_collision[0], target_after[1] - orig_collision[1])
+        
+        # Apply these same vectors but starting from the extended collision point
+        new_cue_end = (extended_collision[0] + cue_vector[0], extended_collision[1] + cue_vector[1])
+        new_target_end = (extended_collision[0] + target_vector[0], extended_collision[1] + target_vector[1])
+        
+        # Add the two prong lines with the original vector math
+        lines.append((extended_collision[0]+70, extended_collision[1]+40, new_cue_end[0]+70, new_cue_end[1]+40))
+        lines.append((extended_collision[0]+70, extended_collision[1]+40, new_target_end[0]+70, new_target_end[1]+40))
     else:
         # No collision - just the straight path
         start = transform_point(trajectories['cue_path'][0])
         end = transform_point(trajectories['cue_path'][1])
-        lines.append((start[0], start[1], end[0], end[1]))
+        # Extend this line too since it's the stem line in this case
+        extended_end = extend_line(start, end)
+        lines.append((start[0], start[1], extended_end[0], extended_end[1]))
     
     return lines
 
@@ -332,7 +365,7 @@ def detect_aruco_markers(frame, detector, camera_index=0):
 
 def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
     """
-    Detect the white cue ball in the frame.
+    Detect the white cue ball in the frame with improved low-light detection.
     
     Args:
         frame: Input frame
@@ -346,18 +379,45 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
     """
     global SHARED_CUE_BALL
     
+    # Ensure SHARED_CUE_BALL is properly initialized 
+    if SHARED_CUE_BALL is None or not isinstance(SHARED_CUE_BALL, dict):
+        SHARED_CUE_BALL = {
+            'positions': [None, None],
+            'radii': [None, None],
+            'confidences': [0.0, 0.0],
+            'timestamp': time.time()
+        }
+    
     # Convert to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # HSV range for white ball
-    lower_white = np.array([0, 0, 200])
-    upper_white = np.array([180, 40, 255])
+    # Get average brightness to adapt detection parameters
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    avg_brightness = np.mean(gray)
+    
+    # Dynamically adjust thresholds based on scene brightness
+    # Lower threshold values in darker environments
+    min_value = max(100, min(150, avg_brightness - 20))  # Adaptive brightness threshold
+    
+    # HSV range for white ball with adaptive parameters
+    lower_white = np.array([0, 0, min_value])
+    upper_white = np.array([180, min(70, max(40, 100 - avg_brightness/4)), 255])
     
     # Create mask for white regions
     mask = cv2.inRange(hsv, lower_white, upper_white)
     
-    # Apply table mask
-    mask = cv2.bitwise_and(mask, table_mask)
+    # Apply table mask if available
+    if table_mask is not None:
+        mask = cv2.bitwise_and(mask, table_mask)
+    
+    # Apply morphological operations to clean up the mask
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)  # Remove noise
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # Fill small holes
+    
+    # Optional: Debug visualization
+    # Uncomment this to see the detection mask
+    # cv2.imshow("Cue Ball Mask", mask)
     
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -367,37 +427,73 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
         valid_contours = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < 300:  # Skip small contours
+            if area < 200:  # Skip small contours
                 continue
                 
             perimeter = cv2.arcLength(contour, True)
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
-                if circularity > 0.7:  # Circle-like shape
-                    valid_contours.append(contour)
+                if circularity > 0.6:  # Circle-like shape with reduced threshold
+                    valid_contours.append((contour, circularity, area))
         
         if valid_contours:
-            # Get the largest valid contour
-            largest_contour = max(valid_contours, key=cv2.contourArea)
+            # Sort by a combination of circularity and size to find the best match
+            best_contours = sorted(valid_contours, key=lambda x: x[1] * (x[2]**0.5), reverse=True)
+            
+            # Get the best contour
+            largest_contour, circularity, area = best_contours[0]
             ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
             
-            if radius > 10:  # Minimum radius threshold
+            if radius > 8:  # Reduced minimum radius threshold
                 # Calculate confidence based on circularity and size
-                area = cv2.contourArea(largest_contour)
-                perimeter = cv2.arcLength(largest_contour, True)
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                confidence = circularity * (radius / 30)  # Normalize by expected radius
+                # Higher weight on circularity for low light conditions
+                confidence = (circularity * 0.7) + (min(radius / 30, 1.0) * 0.3)
                 
                 center_point = (int(x), int(y))
                 radius_int = int(radius)
                 
-                # Update shared cue ball info
+                # Draw the detected ball with confidence-colored circle
+                confidence_color = (0, int(255 * confidence), 0)
+                cv2.circle(frame, center_point, radius_int, confidence_color, 2)
+                
+                # Add confidence text
+                cv2.putText(frame, f"Conf: {confidence:.2f}", 
+                           (center_point[0] - 30, center_point[1] + radius_int + 15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, confidence_color, 2)
+                
+                # Update shared cue ball info with safety check
                 update_shared_cue_ball(center_point, radius_int, confidence, camera_index)
                 
                 return (center_point, radius_int), confidence
     
+    # Check for last known position with time decay
+    try:
+        # Safely access SHARED_CUE_BALL with validation
+        if (SHARED_CUE_BALL and isinstance(SHARED_CUE_BALL, dict) and 
+            'positions' in SHARED_CUE_BALL and 'radii' in SHARED_CUE_BALL and 
+            camera_index < len(SHARED_CUE_BALL['positions'])):
+            
+            last_position = SHARED_CUE_BALL['positions'][camera_index]
+            if last_position:
+                # Ensure radius access is safe
+                last_radius = SHARED_CUE_BALL['radii'][camera_index] if (
+                    camera_index < len(SHARED_CUE_BALL['radii']) and 
+                    SHARED_CUE_BALL['radii'][camera_index] is not None
+                ) else 15
+                
+                # Draw last known position with faded color
+                cv2.circle(frame, last_position, last_radius, (100, 100, 100), 1)
+                cv2.putText(frame, "Last seen", (last_position[0] - 30, last_position[1] - 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+    except Exception as e:
+        print(f"Error showing last position: {e}")
+    
+    # Set confidence to 0 when no ball detected
+    # Reset this camera's shared data but preserve data from other cameras
+    update_shared_cue_ball(None, None, 0.0, camera_index)
+    
     return None, 0.0
-
+   
 def update_shared_cue_ball(center, radius, confidence, camera_index):
     """
     Update the shared cue ball information across cameras.
@@ -413,14 +509,27 @@ def update_shared_cue_ball(center, radius, confidence, camera_index):
     # Make sure we have a valid center point
     if center is None or not isinstance(center, tuple) or len(center) != 2:
         return
-        
-    if SHARED_CUE_BALL is None:
+    
+    # Initialize the data structure if it doesn't exist
+    if SHARED_CUE_BALL is None or not isinstance(SHARED_CUE_BALL, dict):
         SHARED_CUE_BALL = {
             'positions': [None, None],
             'radii': [None, None],
             'confidences': [0.0, 0.0],
             'timestamp': time.time()
         }
+    
+    # Make sure arrays exist and have correct length
+    for key in ['positions', 'radii', 'confidences']:
+        if key not in SHARED_CUE_BALL or not isinstance(SHARED_CUE_BALL[key], list):
+            SHARED_CUE_BALL[key] = [None, None] if key != 'confidences' else [0.0, 0.0]
+        
+        # Extend arrays if needed
+        while len(SHARED_CUE_BALL[key]) <= camera_index:
+            if key == 'confidences':
+                SHARED_CUE_BALL[key].append(0.0)
+            else:
+                SHARED_CUE_BALL[key].append(None)
     
     # Update this camera's information
     SHARED_CUE_BALL['positions'][camera_index] = center
@@ -430,9 +539,9 @@ def update_shared_cue_ball(center, radius, confidence, camera_index):
     
     # Clear old information (older than 0.5 seconds)
     current_time = time.time()
-    if current_time - SHARED_CUE_BALL['timestamp'] > 0.5:
+    if current_time - SHARED_CUE_BALL.get('timestamp', 0) > 0.5:
         # Reset confidences for old detections
-        for i in range(1):
+        for i in range(len(SHARED_CUE_BALL['confidences'])):
             if i != camera_index:
                 SHARED_CUE_BALL['confidences'][i] = 0.0
 
@@ -445,25 +554,42 @@ def get_best_cue_ball():
     """
     global SHARED_CUE_BALL
     
-    if SHARED_CUE_BALL is None:
+    # Check if SHARED_CUE_BALL is initialized properly
+    if SHARED_CUE_BALL is None or not isinstance(SHARED_CUE_BALL, dict):
+        return None, None, None
+    
+    # Make sure required keys exist
+    required_keys = ['positions', 'radii', 'confidences']
+    if not all(key in SHARED_CUE_BALL for key in required_keys):
         return None, None, None
     
     # Find camera with highest confidence
     max_confidence = 0.0
     best_index = -1
     
-    for i in range(2):
-        confidence = SHARED_CUE_BALL['confidences'][i]
-        if confidence > max_confidence:
-            max_confidence = confidence
-            best_index = i
+    # Get the length of the confidences list to avoid index errors
+    conf_length = len(SHARED_CUE_BALL['confidences'])
     
-    if best_index >= 0 and max_confidence > 0:
-        return (
-            SHARED_CUE_BALL['positions'][best_index],
-            SHARED_CUE_BALL['radii'][best_index],
-            best_index
-        )
+    # Make sure we're only iterating up to the available length
+    for i in range(min(conf_length, 2)):  # Limit to max 2 cameras
+        if i < conf_length:  # Double-check index is valid
+            confidence = SHARED_CUE_BALL['confidences'][i]
+            if confidence > max_confidence:
+                max_confidence = confidence
+                best_index = i
+    
+    # Make sure best_index is valid and arrays have enough elements
+    if (best_index >= 0 and max_confidence > 0 and 
+        best_index < len(SHARED_CUE_BALL['positions']) and 
+        best_index < len(SHARED_CUE_BALL['radii'])):
+        
+        # Make sure the position is not None
+        if SHARED_CUE_BALL['positions'][best_index] is not None:
+            return (
+                SHARED_CUE_BALL['positions'][best_index],
+                SHARED_CUE_BALL['radii'][best_index],
+                best_index
+            )
     
     return None, None, None
 
@@ -598,9 +724,10 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
     # Convert to HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # HSV range for cue stick (light colors)
-    lower_silver = np.array([0, 0, 180])
-    upper_silver = np.array([180, 30, 255])
+    # MODIFIED: Adjusted HSV range for cue stick in lower light settings
+    # Lower saturation threshold and wider value range
+    lower_silver = np.array([0, 0, 120])  # Lower minimum brightness value
+    upper_silver = np.array([180, 50, 255])  # Higher saturation tolerance
     
     # Create mask for potential cue stick
     mask = cv2.inRange(hsv, lower_silver, upper_silver)
@@ -608,12 +735,46 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
     # Apply aruco mask
     mask = cv2.bitwise_and(mask, aruco_mask)
     
+    # ADDED: Apply table mask if provided
+    if table_mask is not None:
+        mask = cv2.bitwise_and(mask, table_mask)
+    
+    # ADDED: Apply morphological operations to improve detection
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
+    # ADDED: Create a debug image to visualize the mask
+    debug_mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    
     if contours:
-        # Find largest contour (likely the cue stick)
-        largest_contour = max(contours, key=cv2.contourArea)
+        # Find contours with sufficient area and elongated shape
+        valid_contours = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 100:  # Skip very small contours
+                continue
+                
+            # Calculate aspect ratio to find elongated shapes
+            x, y, w, h = cv2.boundingRect(contour)
+            aspect_ratio = float(w) / h if h > 0 else 0
+            
+            # Cue sticks are elongated objects
+            if aspect_ratio > 4.0 or aspect_ratio < 0.25:
+                valid_contours.append(contour)
+        
+        # If we have valid contours, use the largest one
+        if valid_contours:
+            largest_contour = max(valid_contours, key=cv2.contourArea)
+        else:
+            # Fall back to the largest contour if no valid ones found
+            largest_contour = max(contours, key=cv2.contourArea)
+        
+        # Draw the contour on debug image
+        cv2.drawContours(debug_mask, [largest_contour], 0, (0, 255, 0), 2)
         
         # Fit a line to the contour
         [vx, vy, x, y] = cv2.fitLine(largest_contour, cv2.DIST_L2, 0, 0.01, 0.01)
@@ -626,10 +787,13 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
         
         # Ensure the cue direction points away from the ball
         # (Invert direction if needed)
-        vx_scalar, vy_scalar = -vx_scalar, -vy_scalar
-        
-        # Get cue ball position
         cue_x, cue_y = cue_ball
+        vec_to_ball_x, vec_to_ball_y = cue_x - x_scalar, cue_y - y_scalar
+        dot_product = vec_to_ball_x * vx_scalar + vec_to_ball_y * vy_scalar
+        
+        # If dot product is negative, flip the direction
+        if dot_product < 0:
+            vx_scalar, vy_scalar = -vx_scalar, -vy_scalar
         
         # Calculate perpendicular distance from cue line to ball center
         perp_x, perp_y = -vy_scalar, vx_scalar  # Perpendicular to direction
@@ -646,6 +810,33 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
         max_distance = 20  # pixels
         
         is_pointing_at_ball = is_ahead and distance_to_line < max_distance
+        
+        # ADDED: Visualize the detected cue stick line
+        # Draw line representing detected cue stick (both forward and backward from point)
+        lefty = int((-x_scalar * (vy_scalar/vx_scalar) + y_scalar) if vx_scalar != 0 else 0)
+        righty = int(((frame.shape[1]-x_scalar) * (vy_scalar/vx_scalar) + y_scalar) if vx_scalar != 0 else frame.shape[0])
+        
+        # Calculate endpoints for a line segment of reasonable length
+        line_length = 400  # pixels
+        
+        # Forward line (in direction of cue)
+        x1 = int(x_scalar - vx_scalar * line_length)
+        y1 = int(y_scalar - vy_scalar * line_length)
+        x2 = int(x_scalar + vx_scalar * line_length)
+        y2 = int(y_scalar + vy_scalar * line_length)
+        
+        # Draw the detected cue stick line
+        cv2.line(frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+        
+        # Add a label for the cue stick line
+        label_x = x2 + int(vx_scalar * 20)
+        label_y = y2 + int(vy_scalar * 20)
+        cv2.putText(frame, "Cue Stick", (label_x, label_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+        
+        # OPTIONAL: Show the debug mask image in a separate window
+        # Uncomment this for debugging in low light environments
+        # cv2.imshow("Cue Stick Detection", debug_mask)
         
         # Return line parameters and pointing status
         return (vx_scalar, vy_scalar, cue_x, cue_y), is_pointing_at_ball

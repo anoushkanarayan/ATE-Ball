@@ -457,12 +457,12 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
                 cv2.circle(frame, center_point, radius_int, confidence_color, 2)
                 
                 # Add confidence text
-                cv2.putText(frame, f"Conf: {confidence:.2f}", 
+                '''cv2.putText(frame, f"Conf: {confidence:.2f}", 
                            (center_point[0] - 30, center_point[1] + radius_int + 15),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, confidence_color, 2)
                 
                 # Update shared cue ball info with safety check
-                update_shared_cue_ball(center_point, radius_int, confidence, camera_index)
+                update_shared_cue_ball(center_point, radius_int, confidence, camera_index)'''
                 
                 return (center_point, radius_int), confidence
     

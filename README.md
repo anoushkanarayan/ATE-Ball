@@ -10,4 +10,5 @@ python projection.py --video videos/shot.mp4 --projection
 
 When running this program, the projection pane is rotated 180 degrees from the camera pane. This accounts for the fact that the projector is facing the opposite direction as the camera on the table.
 
+REVERT THIS BACK TO 'phenomenal" after showcase
 

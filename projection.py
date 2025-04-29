@@ -20,8 +20,6 @@ SHARED_CUE_BALL = {
     'timestamp': time.time()
 }
 SHARED_MARKERS = []
-LOCKED_TABLE_CENTER = None
-CENTER_DETECTION_TIME = None
 
 # === LineProjectionSystem ===
 class LineProjectionSystem:
@@ -39,7 +37,6 @@ class LineProjectionSystem:
         self.lock = threading.Lock()
         self.detected_lines = []
         self.has_lines = False
-        self.table_center = None  # Add table center tracking
         self.running = True
         self.window_name = "Projection View"
         self.display_thread = None  # Initialize to None
@@ -49,11 +46,6 @@ class LineProjectionSystem:
             self.detected_lines = lines.copy() if lines else []
             self.has_lines = len(self.detected_lines) > 0
 
-    def update_table_center(self, center_point):
-        """Update the table center point for projection"""
-        with self.lock:
-            self.table_center = center_point
-
     def update_plot(self, frame_num):
         for line in self.lines:
             if line in self.ax.lines:
@@ -62,23 +54,10 @@ class LineProjectionSystem:
         with self.lock:
             current_lines = self.detected_lines.copy()
             has_lines = self.has_lines
-            center = self.table_center
         if has_lines:
             for x1, y1, x2, y2 in current_lines:
                 line, = self.ax.plot([x1, x2], [y1, y2], color='white', linewidth=3)
                 self.lines.append(line)
-        if center:
-            # Draw X at center
-            size = 20  # Size of the X
-            center_x, center_y = center
-            line1, = self.ax.plot([center_x - size, center_x + size], 
-                                 [center_y - size, center_y + size], 
-                                 color='white', linewidth=3)
-            line2, = self.ax.plot([center_x - size, center_x + size], 
-                                 [center_y + size, center_y - size], 
-                                 color='white', linewidth=3)
-            self.lines.append(line1)
-            self.lines.append(line2)
         return self.lines
 
     def create_projection_frame(self):
@@ -87,19 +66,9 @@ class LineProjectionSystem:
         with self.lock:
             lines = self.detected_lines.copy()
             has_lines = self.has_lines
-            center = self.table_center
         if has_lines:
             for x1, y1, x2, y2 in lines:
                 cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 5)
-        if center:
-            # Draw X at center
-            center_x, center_y = center
-            size = 20  # Size of the X
-            # Draw X using two diagonal lines
-            cv2.line(frame, (center_x - size, center_y - size), 
-                    (center_x + size, center_y + size), (255, 255, 255), 5)
-            cv2.line(frame, (center_x - size, center_y + size), 
-                    (center_x + size, center_y - size), (255, 255, 255), 5)
         return cv2.rotate(frame, cv2.ROTATE_180)
 
     def run_opencv_display(self):
@@ -133,49 +102,10 @@ class LineProjectionSystem:
     def __del__(self):
         self.stop()
 
-# Function to calculate the center of the table from marker data
-def calculate_table_center(marker_data):
-    """
-    Calculate the center of the pool table using only ArUco markers.
-    
-    Args:
-        marker_data: List of dictionaries containing marker information
-        
-    Returns:
-        Tuple (center_x, center_y) or None if can't calculate
-    """
-    global LOCKED_TABLE_CENTER, CENTER_DETECTION_TIME
-    
-    # If we already have a locked center, use it
-    if LOCKED_TABLE_CENTER is not None:
-        return LOCKED_TABLE_CENTER
-        
-    # Require at least 2 markers for calculation
-    if not marker_data or len(marker_data) < 2:
-        return None
-    
-    # Extract all marker centers - only use ArUco markers
-    centers = [marker['center'] for marker in marker_data]
-    
-    # Calculate the average of all marker centers
-    center_x = int(sum(c[0] for c in centers) / len(centers)) + 30
-    center_y = int(sum(c[1] for c in centers) / len(centers)) - 85
-    
-    calculated_center = (center_x, center_y)
-    
-    # Start or continue the center detection time
-    current_time = time.time()
-    if CENTER_DETECTION_TIME is None:
-        CENTER_DETECTION_TIME = current_time
-        return calculated_center
-        
-    # Check if we've been detecting the center for more than 1 second
-    elif current_time - CENTER_DETECTION_TIME > 5.0:
-        # Lock in the center permanently
-        print(f"Locking table center at {calculated_center}")
-        LOCKED_TABLE_CENTER = calculated_center
-        
-    return calculated_center
+    def get_current_lines(self):
+        """Return the current projection lines for drawing on the camera feed."""
+        with self.lock:
+            return self.detected_lines.copy(), self.has_lines
 
 # === Frame Processing ===
 def process_frame(frame, detector, projection_system=None):
@@ -201,10 +131,10 @@ def process_frame(frame, detector, projection_system=None):
     cue_radius = cue_ball_data[1] if cue_ball_data else 15
     
     # ADDED: Display current light level for debugging
-    cv2.putText(frame_copy, f"Light: {avg_brightness:.1f}", (20, 20), 
+    '''cv2.putText(frame_copy, f"Light: {avg_brightness:.1f}", (20, 20), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
     cv2.putText(frame_copy, f"Ball Conf: {confidence:.2f}", (20, 50), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)'''
 
     # Detect colored balls with the same enhanced parameters
     colored_balls = detect_colored_balls(frame_copy, aruco_mask, table_mask, bounds, cue_ball)
@@ -235,9 +165,9 @@ def process_frame(frame, detector, projection_system=None):
             
             # ADDED: Show detected cue direction angle
             angle_deg = np.degrees(np.arctan2(vy, vx))
-            cv2.putText(frame_copy, f"Angle: {angle_deg:.1f}°", 
+            '''cv2.putText(frame_copy, f"Angle: {angle_deg:.1f}°", 
                        (cue_ball[0] - 30, cue_ball[1] + cue_radius + 20), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)'''
             
             if is_pointing:
                 # Find target ball with improved parameters
@@ -283,11 +213,11 @@ def process_frame(frame, detector, projection_system=None):
         
         projection_system.update_lines(lines)
         
-        # Draw projection lines directly on the camera feed
+        # Draw projection lines directly on the camera feed with enhanced visibility
         current_lines, has_lines = projection_system.get_current_lines()
         if has_lines:
             for x1, y1, x2, y2 in current_lines:
-                cv2.line(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 255), 3)
+                cv2.line(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), (255, 255, 0), 4)  # Brighter, thicker lines
 
     return frame_copy
 
@@ -353,6 +283,9 @@ def main():
 
         # Process the frame
         processed_frame = process_frame(frame, detector, projection_system)
+
+        # TOGGLE THIS ON AND OFF FOR DEBUGGING PURPOSES
+        #processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_180)
         
         # Display the processed frame
         cv2.imshow("Camera Feed", processed_frame)

@@ -116,8 +116,8 @@ def process_frame(frame, detector, projection_system=None):
                     
                     # Draw the straight line on the frame with high visibility
                     cv2.line(frame_copy, cue_ball, (end_x, end_y), (0, 255, 255), 3)  # Thicker line
-                    cv2.putText(frame_copy, "Projected Path", (end_x - 50, end_y - 10),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                    #cv2.putText(frame_copy, "Projected Path", (end_x - 50, end_y - 10),
+                    #           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
     # Always update projection lines if system exists, even with empty trajectories
     if projection_system:

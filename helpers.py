@@ -45,7 +45,7 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
         return point
     
     # OFFSET
-    def extend_line(start_point, end_point, extension=30):
+    def extend_line(start_point, end_point, extension=60):
         """Extend a line by the specified number of pixels."""
         # Calculate direction vector
         dx = end_point[0] - start_point[0]
@@ -74,7 +74,7 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
         extended_collision = extend_line(start, orig_collision)
         
         # Add the extended stem line
-        lines.append((start[0]+70, start[1]+40, extended_collision[0]+70, extended_collision[1]+40))
+        lines.append((start[0]+0, start[1]-20, extended_collision[0]+0, extended_collision[1]-20))
         
         # Get original trajectories for the prongs
         cue_after = transform_point(trajectories['cue_path'][3])
@@ -89,8 +89,8 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
         new_target_end = (extended_collision[0] + target_vector[0], extended_collision[1] + target_vector[1])
         
         # Add the two prong lines with the original vector math
-        lines.append((extended_collision[0]+70, extended_collision[1]+40, new_cue_end[0]+70, new_cue_end[1]+40))
-        lines.append((extended_collision[0]+70, extended_collision[1]+40, new_target_end[0]+70, new_target_end[1]+40))
+        lines.append((extended_collision[0]+0, extended_collision[1]-20, new_cue_end[0]+0, new_cue_end[1]-20))
+        lines.append((extended_collision[0]+0, extended_collision[1]-20, new_target_end[0]+0, new_target_end[1]-20))
     else:
         # No collision - just the straight path
         start = transform_point(trajectories['cue_path'][0])

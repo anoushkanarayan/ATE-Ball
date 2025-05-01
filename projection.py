@@ -41,6 +41,16 @@ def process_frame(frame, detector, projection_system=None):
     # Detect white ball with enhanced parameters
     cue_ball_data, confidence = detect_white_ball(frame_copy, aruco_mask, table_mask, bounds, 0)
 
+    # ADDED: Visualize the ArUco mask for debugging
+    # Create a colored visualization of the ArUco mask
+    aruco_mask_vis = np.zeros_like(frame_copy)
+    aruco_mask_vis[:,:,0] = aruco_mask  # Blue channel
+    aruco_mask_vis[:,:,1] = aruco_mask  # Green channel
+    aruco_mask_vis[:,:,2] = aruco_mask  # Red channel
+    # Uncomment to overlay mask on the frame for debugging
+    # alpha = 0.3  # Transparency
+    # frame_copy = cv2.addWeighted(frame_copy, 1, aruco_mask_vis, alpha, 0)
+
     # Extract cue ball information if available
     cue_ball = cue_ball_data[0] if cue_ball_data else None
     cue_radius = cue_ball_data[1] if cue_ball_data else 15

@@ -74,7 +74,7 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
         extended_collision = extend_line(start, orig_collision)
         
         # Add the extended stem line
-        lines.append((start[0]+0, start[1]-20, extended_collision[0]+0, extended_collision[1]-20))
+        lines.append((start[0]+0, start[1]+20, extended_collision[0]+0, extended_collision[1]+20))
         
         # Get original trajectories for the prongs
         cue_after = transform_point(trajectories['cue_path'][3])
@@ -89,8 +89,8 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
         new_target_end = (extended_collision[0] + target_vector[0], extended_collision[1] + target_vector[1])
         
         # Add the two prong lines with the original vector math
-        lines.append((extended_collision[0]+0, extended_collision[1]-20, new_cue_end[0]+0, new_cue_end[1]-20))
-        lines.append((extended_collision[0]+0, extended_collision[1]-20, new_target_end[0]+0, new_target_end[1]-20))
+        lines.append((extended_collision[0]+0, extended_collision[1]+20, new_cue_end[0]+0, new_cue_end[1]+20))
+        lines.append((extended_collision[0]+0, extended_collision[1]+20, new_target_end[0]+0, new_target_end[1]+20))
     else:
         # No collision - just the straight path
         start = transform_point(trajectories['cue_path'][0])
@@ -227,16 +227,34 @@ def detect_aruco_markers(frame, detector, camera_index=0):
     """
     global LOCKED_BOUNDS, LOCKED_TABLE_MASK, SHARED_MARKERS
     
+    # Initialize globally if needed
+    if len(LOCKED_BOUNDS) <= camera_index:
+        # Extend the list to accommodate the camera index
+        LOCKED_BOUNDS.extend([None] * (camera_index + 1 - len(LOCKED_BOUNDS)))
+    
+    if len(LOCKED_TABLE_MASK) <= camera_index:
+        # Extend the list to accommodate the camera index
+        LOCKED_TABLE_MASK.extend([None] * (camera_index + 1 - len(LOCKED_TABLE_MASK)))
+    
     # If we have locked bounds and mask for this camera, use them
-    if LOCKED_BOUNDS[camera_index] is not None and LOCKED_TABLE_MASK[camera_index] is not None:
+    if camera_index < len(LOCKED_BOUNDS) and LOCKED_BOUNDS[camera_index] is not None and \
+       camera_index < len(LOCKED_TABLE_MASK) and LOCKED_TABLE_MASK[camera_index] is not None:
         # Still detect markers for coordination purposes
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         markerCorners, markerIds, _ = detector.detectMarkers(gray)
         
+        # Create new aruco mask - WHITE (255) background with BLACK (0) markers
+        aruco_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
+        
         marker_data = []
         if markerIds is not None:
-            # Draw the detected markers
+            # Draw the detected markers on the frame
             frame = cv2.aruco.drawDetectedMarkers(frame, markerCorners, markerIds)
+            
+            # Fill markers with BLACK (0) in the mask
+            for corners in markerCorners:
+                corners = corners.reshape((4, 2)).astype(int)
+                cv2.fillPoly(aruco_mask, [corners], 0)
             
             # Store marker data
             for i, (corners, marker_id) in enumerate(zip(markerCorners, markerIds)):
@@ -252,7 +270,7 @@ def detect_aruco_markers(frame, detector, camera_index=0):
                 })
         
         return (frame, 
-                np.ones(frame.shape[:2], dtype=np.uint8) * 255, 
+                aruco_mask,
                 LOCKED_BOUNDS[camera_index], 
                 LOCKED_TABLE_MASK[camera_index],
                 marker_data)
@@ -263,7 +281,7 @@ def detect_aruco_markers(frame, detector, camera_index=0):
     # Detect ArUco markers
     markerCorners, markerIds, _ = detector.detectMarkers(gray)
     
-    # Default mask and bounds
+    # Create aruco mask - WHITE (255) background with BLACK (0) markers
     aruco_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
     
     # Default bounds - whole frame
@@ -278,6 +296,11 @@ def detect_aruco_markers(frame, detector, camera_index=0):
     if markerIds is not None:
         # Draw the detected markers
         frame = cv2.aruco.drawDetectedMarkers(frame, markerCorners, markerIds)
+        
+        # Fill markers with BLACK (0) in the mask
+        for corners in markerCorners:
+            corners = corners.reshape((4, 2)).astype(int)
+            cv2.fillPoly(aruco_mask, [corners], 0)
         
         # Process each marker
         all_corners = []
@@ -333,40 +356,32 @@ def detect_aruco_markers(frame, detector, camera_index=0):
                 # Draw table boundary
                 cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
                 
-                # Lock in detected values
-                LOCKED_BOUNDS[camera_index] = bounds
-                LOCKED_TABLE_MASK[camera_index] = table_mask
+                # Lock in detected values if needed
+                if camera_index < len(LOCKED_BOUNDS):
+                    LOCKED_BOUNDS[camera_index] = bounds
+                else:
+                    # Extend and set
+                    LOCKED_BOUNDS.extend([None] * (camera_index + 1 - len(LOCKED_BOUNDS)))
+                    LOCKED_BOUNDS[camera_index] = bounds
+                
+                if camera_index < len(LOCKED_TABLE_MASK):
+                    LOCKED_TABLE_MASK[camera_index] = table_mask
+                else:
+                    # Extend and set
+                    LOCKED_TABLE_MASK.extend([None] * (camera_index + 1 - len(LOCKED_TABLE_MASK)))
+                    LOCKED_TABLE_MASK[camera_index] = table_mask
             else:
                 print(f"Warning: Invalid table bounds after applying margin. Using full frame.")
     
+    # DEBUG: Uncomment to save masks for debugging
+    # cv2.imwrite(f"aruco_mask_debug_{camera_index}.png", aruco_mask)
+    # cv2.imwrite(f"table_mask_debug_{camera_index}.png", table_mask)
+    
     return frame, aruco_mask, bounds, table_mask, marker_data
-    """
-    Find common markers between two camera views.
-    
-    Args:
-        markers1: Marker data from first camera
-        markers2: Marker data from second camera
-        
-    Returns:
-        List of common marker IDs
-    """
-    global SHARED_MARKERS
-    
-    # Create dictionaries for fast lookup
-    markers1_dict = {m['id']: m for m in markers1}
-    markers2_dict = {m['id']: m for m in markers2}
-    
-    # Find common marker IDs
-    common_ids = set(markers1_dict.keys()).intersection(set(markers2_dict.keys()))
-    
-    # Store shared markers for reference
-    SHARED_MARKERS = list(common_ids)
-    
-    return common_ids
 
 def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
     """
-    Detect the white cue ball in the frame.
+    Detect the white cue ball in the frame with improved robustness.
     
     Args:
         frame: Input frame
@@ -382,28 +397,41 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
     
     # Convert to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    '''# Get average brightness to adapt detection parameters
+    
+    # Get average brightness to adapt detection parameters
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     avg_brightness = np.mean(gray)
     
-    # Dynamically adjust thresholds based on scene brightness
-    # Lower threshold values in darker environments
-    min_value = max(100, min(150, avg_brightness - 20))  # Adaptive brightness threshold
-    
-    # HSV range for white ball with adaptive parameters
-    lower_white = np.array([0, 0, min_value])
-    upper_white = np.array([180, min(70, max(40, 100 - avg_brightness/4)), 255])'''
-    
-    # HSV range for white ball
-    lower_white = np.array([0, 0, 200])
-    upper_white = np.array([180, 40, 255])
+    # Adapt HSV range based on lighting conditions
+    if avg_brightness < 120:  # Darker environment
+        lower_white = np.array([0, 0, 170])  # Lower value threshold for darker environments
+        upper_white = np.array([180, 50, 255])
+    else:  # Brighter environment
+        lower_white = np.array([0, 0, 200])  # Higher value threshold for brighter environments
+        upper_white = np.array([180, 30, 255])  # Lower saturation for pure white
     
     # Create mask for white regions
     mask = cv2.inRange(hsv, lower_white, upper_white)
     
     # Apply table mask
     mask = cv2.bitwise_and(mask, table_mask)
+    
+    # Make sure aruco_mask is properly formatted (255 for non-marker areas, 0 for markers)
+    if np.mean(aruco_mask[aruco_mask > 0]) < 128:  # If the non-zero values are mostly dark
+        aruco_mask_for_exclusion = cv2.bitwise_not(aruco_mask)
+    else:
+        aruco_mask_for_exclusion = aruco_mask.copy()
+    
+    # Ensure the mask is binary (only 0 and 255 values)
+    _, aruco_mask_for_exclusion = cv2.threshold(aruco_mask_for_exclusion, 128, 255, cv2.THRESH_BINARY)
+    
+    # Apply aruco mask to exclude the markers
+    mask = cv2.bitwise_and(mask, aruco_mask_for_exclusion)
+    
+    # Apply morphological operations to improve detection
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)  # Remove small noise
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # Fill small holes
     
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -420,27 +448,103 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
             if perimeter > 0:
                 circularity = 4 * np.pi * area / (perimeter * perimeter)
                 if circularity > 0.7:  # Circle-like shape
-                    valid_contours.append(contour)
+                    valid_contours.append((contour, circularity, area))
         
         if valid_contours:
-            # Get the largest valid contour
-            largest_contour = max(valid_contours, key=cv2.contourArea)
-            ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
+            # Get the contour with highest circularity and reasonable size
+            best_contour = max(valid_contours, key=lambda x: x[1] * (x[2] / 1000.0 if x[2] < 2000 else 2.0))
+            contour, circularity, area = best_contour
             
-            if radius > 10:  # Minimum radius threshold
+            ((x, y), radius) = cv2.minEnclosingCircle(contour)
+            
+            if radius > 10 and radius < 30:  # Reasonable radius range for cue ball
                 # Calculate confidence based on circularity and size
-                area = cv2.contourArea(largest_contour)
-                perimeter = cv2.arcLength(largest_contour, True)
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                confidence = circularity * (radius / 30)  # Normalize by expected radius
+                size_factor = min(1.0, area / 700.0)  # Normalize by expected area
+                confidence = circularity * size_factor
                 
                 center_point = (int(x), int(y))
                 radius_int = int(radius)
                 
-                # Update shared cue ball info
-                update_shared_cue_ball(center_point, radius_int, confidence, camera_index)
+                # Check if center is within bounds and not on an ArUco tag
+                within_bounds = (
+                    bounds[0] <= x <= bounds[2] and
+                    bounds[1] <= y <= bounds[3]
+                )
                 
-                return (center_point, radius_int), confidence
+                if within_bounds:
+                    # Double check not on ArUco marker
+                    if (y < aruco_mask_for_exclusion.shape[0] and 
+                        x < aruco_mask_for_exclusion.shape[1] and 
+                        aruco_mask_for_exclusion[int(y), int(x)] > 0):
+                        
+                        # Draw circle on the mask for debugging
+                        # cv2.circle(frame, center_point, radius_int, (0, 255, 255), 2)
+                        # cv2.putText(frame, f"Conf: {confidence:.2f}", (center_point[0] - 20, center_point[1] - 20),
+                        #           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                        
+                        # Update shared cue ball info
+                        update_shared_cue_ball(center_point, radius_int, confidence, camera_index)
+                        return (center_point, radius_int), confidence
+    
+    # If no ball is detected with the standard approach, try with more relaxed parameters
+    # This is especially helpful when the cue stick is near the ball
+    lower_white_relaxed = np.array([0, 0, 160])  # Lower threshold for value
+    upper_white_relaxed = np.array([180, 60, 255])  # Higher threshold for saturation
+    
+    relaxed_mask = cv2.inRange(hsv, lower_white_relaxed, upper_white_relaxed)
+    relaxed_mask = cv2.bitwise_and(relaxed_mask, table_mask)
+    relaxed_mask = cv2.bitwise_and(relaxed_mask, aruco_mask_for_exclusion)
+    
+    # Apply stronger morphological operations
+    kernel = np.ones((5, 5), np.uint8)
+    relaxed_mask = cv2.morphologyEx(relaxed_mask, cv2.MORPH_OPEN, kernel)
+    relaxed_mask = cv2.morphologyEx(relaxed_mask, cv2.MORPH_CLOSE, kernel)
+    
+    # Save the mask for debugging
+    # cv2.imwrite(f"relaxed_mask_{camera_index}.png", relaxed_mask)
+    
+    # Find contours in the relaxed mask
+    contours, _ = cv2.findContours(relaxed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        # Filter by circularity and size
+        valid_contours = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 200:  # Even more relaxed size threshold
+                continue
+                
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                if circularity > 0.6:  # More relaxed circularity
+                    valid_contours.append((contour, circularity, area))
+        
+        if valid_contours:
+            # Get the most circular contour
+            best_contour = max(valid_contours, key=lambda x: x[1])
+            contour, circularity, area = best_contour
+            
+            ((x, y), radius) = cv2.minEnclosingCircle(contour)
+            
+            if radius > 8 and radius < 35:  # More relaxed radius range
+                center_point = (int(x), int(y))
+                radius_int = int(radius)
+                
+                # Calculate a lower confidence for relaxed detection
+                confidence = circularity * 0.8  # Reduce confidence for relaxed parameters
+                
+                # Check if within bounds and not on ArUco marker
+                within_bounds = (
+                    bounds[0] <= x <= bounds[2] and
+                    bounds[1] <= y <= bounds[3]
+                )
+                
+                if within_bounds and y < aruco_mask_for_exclusion.shape[0] and x < aruco_mask_for_exclusion.shape[1]:
+                    if aruco_mask_for_exclusion[int(y), int(x)] > 0:
+                        # Update shared cue ball info with lower confidence
+                        update_shared_cue_ball(center_point, radius_int, confidence, camera_index)
+                        return (center_point, radius_int), confidence
     
     return None, 0.0
 
@@ -676,11 +780,22 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
     
     # MODIFIED: Adjusted HSV range for cue stick in lower light settings
     # Lower saturation threshold and wider value range
-    lower_silver = np.array([0, 0, 120])  # Lower minimum brightness value
-    upper_silver = np.array([180, 50, 255])  # Higher saturation tolerance
-    
+    #lower_silver = np.array([0, 0, 120])  # Lower minimum brightness value
+    #upper_silver = np.array([180, 50, 255])  # Higher saturation tolerance
+
     # Create mask for potential cue stick
-    mask = cv2.inRange(hsv, lower_silver, upper_silver)
+    #mask = cv2.inRange(hsv, lower_silver, upper_silver)
+
+    lower_red1 = np.array([0, 100, 100])    # Lower red range (beginning of spectrum)
+    upper_red1 = np.array([10, 255, 255])   # Upper red range 
+
+    lower_red2 = np.array([160, 100, 100])  # Lower red range (end of spectrum)
+    upper_red2 = np.array([180, 255, 255])  # Upper red range
+
+    # Create two masks and combine them
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    mask = cv2.bitwise_or(mask1, mask2)
     
     # Apply aruco mask
     mask = cv2.bitwise_and(mask, aruco_mask)

@@ -27,13 +27,12 @@ def process_frame(frame, detector, projection_system=None):
     # Make a copy of the frame to avoid modification issues
     frame_copy = frame.copy()
     
-    # Apply rotation (needed for both camera and video)
+    # DEBUG: Apply rotation (needed for both camera and video)
     #frame_copy = cv2.rotate(frame_copy, cv2.ROTATE_180)
     
     # Process the frame
     frame_copy, aruco_mask, bounds, table_mask, marker_data = detect_aruco_markers(frame_copy, detector, 0)
     
-    # ADDED: Apply adaptive brightness adjustment for low light
     # Create a grayscale copy for brightness analysis
     gray = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2GRAY)
     avg_brightness = np.mean(gray)
@@ -41,25 +40,15 @@ def process_frame(frame, detector, projection_system=None):
     # Detect white ball with enhanced parameters
     cue_ball_data, confidence = detect_white_ball(frame_copy, aruco_mask, table_mask, bounds, 0)
 
-    # ADDED: Visualize the ArUco mask for debugging
     # Create a colored visualization of the ArUco mask
     aruco_mask_vis = np.zeros_like(frame_copy)
     aruco_mask_vis[:,:,0] = aruco_mask  # Blue channel
     aruco_mask_vis[:,:,1] = aruco_mask  # Green channel
     aruco_mask_vis[:,:,2] = aruco_mask  # Red channel
-    # Uncomment to overlay mask on the frame for debugging
-    # alpha = 0.3  # Transparency
-    # frame_copy = cv2.addWeighted(frame_copy, 1, aruco_mask_vis, alpha, 0)
 
     # Extract cue ball information if available
     cue_ball = cue_ball_data[0] if cue_ball_data else None
     cue_radius = cue_ball_data[1] if cue_ball_data else 15
-    
-    # ADDED: Display current light level for debugging
-    '''cv2.putText(frame_copy, f"Light: {avg_brightness:.1f}", (20, 20), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-    cv2.putText(frame_copy, f"Ball Conf: {confidence:.2f}", (20, 50), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)'''
 
     # Detect colored balls with the same enhanced parameters
     colored_balls = detect_colored_balls(frame_copy, aruco_mask, table_mask, bounds, cue_ball)
@@ -72,7 +61,7 @@ def process_frame(frame, detector, projection_system=None):
     trajectories = None
     cue_line_drawn = False  # Flag to track if we've drawn a cue line
     
-    # MODIFIED: More robust cue detection and visualization
+    # More robust cue detection and visualization
     if cue_ball:
         # Only draw the cue ball if not already drawn by the detector
         if not cue_line_drawn:
@@ -80,7 +69,6 @@ def process_frame(frame, detector, projection_system=None):
             cv2.putText(frame_copy, "Cue Ball", (cue_ball[0] - 30, cue_ball[1] - 20), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
-        # MODIFIED: Improved cue detection for low light
         # Use a wider detection area around the cue ball
         cue_line, is_pointing = detect_cue_orientation(frame_copy, cue_ball, aruco_mask, table_mask)
         
@@ -88,22 +76,16 @@ def process_frame(frame, detector, projection_system=None):
             cue_line_drawn = True
             vx, vy, _, _ = cue_line
             
-            # ADDED: Show detected cue direction angle
-            angle_deg = np.degrees(np.arctan2(vy, vx))
-            '''cv2.putText(frame_copy, f"Angle: {angle_deg:.1f}°", 
-                       (cue_ball[0] - 30, cue_ball[1] + cue_radius + 20), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)'''
-            
             if is_pointing:
                 # Find target ball with improved parameters
                 target_ball = find_target_ball(cue_ball, cue_line, all_detected_balls)
                 
                 if target_ball:
                     center, radius, _ = target_ball
-                    # MODIFIED: Make trajectory more visible in low light
+                    # Make trajectory more visible in low light
                     trajectories = calculate_advanced_collision(cue_ball, center, cue_radius, radius, (vx, vy))
                     
-                    # ADDED: Highlight the target ball
+                    # Highlight the target ball
                     cv2.circle(frame_copy, center, radius, (0, 255, 255), 3)  # Thicker circle
                     cv2.putText(frame_copy, "Target", (center[0] - 25, center[1] - radius - 10),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
@@ -126,15 +108,10 @@ def process_frame(frame, detector, projection_system=None):
                     
                     # Draw the straight line on the frame with high visibility
                     cv2.line(frame_copy, cue_ball, (end_x, end_y), (0, 255, 255), 3)  # Thicker line
-                    #cv2.putText(frame_copy, "Projected Path", (end_x - 50, end_y - 10),
-                    #           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
     # Always update projection lines if system exists, even with empty trajectories
     if projection_system:
         lines = extract_lines_from_trajectories(trajectories) if trajectories else []
-        
-        # Debug output
-        # print(f"Extracted lines: {len(lines) if lines else 0}")
         
         projection_system.update_lines(lines)
         

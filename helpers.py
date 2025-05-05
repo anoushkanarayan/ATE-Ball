@@ -69,7 +69,7 @@ def extract_lines_from_trajectories(trajectories, transform_matrix=None):
         # Original collision point (for prong calculations)
         orig_collision = transform_point(trajectories['collision_point'])
         
-        # Cue stick to collision point - EXTEND THIS LINE by 40px
+        # Cue stick to collision point
         start = transform_point(trajectories['cue_path'][0])
         extended_collision = extend_line(start, orig_collision)
         
@@ -227,7 +227,6 @@ def detect_aruco_markers(frame, detector, camera_index=0):
     """
     global LOCKED_BOUNDS, LOCKED_TABLE_MASK, SHARED_MARKERS
     
-    # Initialize globally if needed
     if len(LOCKED_BOUNDS) <= camera_index:
         # Extend the list to accommodate the camera index
         LOCKED_BOUNDS.extend([None] * (camera_index + 1 - len(LOCKED_BOUNDS)))
@@ -373,10 +372,6 @@ def detect_aruco_markers(frame, detector, camera_index=0):
             else:
                 print(f"Warning: Invalid table bounds after applying margin. Using full frame.")
     
-    # DEBUG: Uncomment to save masks for debugging
-    # cv2.imwrite(f"aruco_mask_debug_{camera_index}.png", aruco_mask)
-    # cv2.imwrite(f"table_mask_debug_{camera_index}.png", table_mask)
-    
     return frame, aruco_mask, bounds, table_mask, marker_data
 
 def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
@@ -404,11 +399,11 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
     
     # Adapt HSV range based on lighting conditions
     if avg_brightness < 120:  # Darker environment
-        lower_white = np.array([0, 0, 170])  # Lower value threshold for darker environments
+        lower_white = np.array([0, 0, 170]) 
         upper_white = np.array([180, 50, 255])
     else:  # Brighter environment
-        lower_white = np.array([0, 0, 200])  # Higher value threshold for brighter environments
-        upper_white = np.array([180, 30, 255])  # Lower saturation for pure white
+        lower_white = np.array([0, 0, 200])
+        upper_white = np.array([180, 30, 255]) 
     
     # Create mask for white regions
     mask = cv2.inRange(hsv, lower_white, upper_white)
@@ -477,11 +472,6 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
                         x < aruco_mask_for_exclusion.shape[1] and 
                         aruco_mask_for_exclusion[int(y), int(x)] > 0):
                         
-                        # Draw circle on the mask for debugging
-                        # cv2.circle(frame, center_point, radius_int, (0, 255, 255), 2)
-                        # cv2.putText(frame, f"Conf: {confidence:.2f}", (center_point[0] - 20, center_point[1] - 20),
-                        #           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                        
                         # Update shared cue ball info
                         update_shared_cue_ball(center_point, radius_int, confidence, camera_index)
                         return (center_point, radius_int), confidence
@@ -499,9 +489,6 @@ def detect_white_ball(frame, aruco_mask, table_mask, bounds, camera_index=0):
     kernel = np.ones((5, 5), np.uint8)
     relaxed_mask = cv2.morphologyEx(relaxed_mask, cv2.MORPH_OPEN, kernel)
     relaxed_mask = cv2.morphologyEx(relaxed_mask, cv2.MORPH_CLOSE, kernel)
-    
-    # Save the mask for debugging
-    # cv2.imwrite(f"relaxed_mask_{camera_index}.png", relaxed_mask)
     
     # Find contours in the relaxed mask
     contours, _ = cv2.findContours(relaxed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -777,14 +764,6 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
     
     # Convert to HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # MODIFIED: Adjusted HSV range for cue stick in lower light settings
-    # Lower saturation threshold and wider value range
-    #lower_silver = np.array([0, 0, 120])  # Lower minimum brightness value
-    #upper_silver = np.array([180, 50, 255])  # Higher saturation tolerance
-
-    # Create mask for potential cue stick
-    #mask = cv2.inRange(hsv, lower_silver, upper_silver)
 
     lower_red1 = np.array([0, 100, 100])    # Lower red range (beginning of spectrum)
     upper_red1 = np.array([10, 255, 255])   # Upper red range 
@@ -876,7 +855,6 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
         
         is_pointing_at_ball = is_ahead and distance_to_line < max_distance
         
-        # ADDED: Visualize the detected cue stick line
         # Draw line representing detected cue stick (both forward and backward from point)
         lefty = int((-x_scalar * (vy_scalar/vx_scalar) + y_scalar) if vx_scalar != 0 else 0)
         righty = int(((frame.shape[1]-x_scalar) * (vy_scalar/vx_scalar) + y_scalar) if vx_scalar != 0 else frame.shape[0])
@@ -898,10 +876,6 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
         label_y = y2 + int(vy_scalar * 20)
         cv2.putText(frame, "Cue Stick", (label_x, label_y), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-        
-        # OPTIONAL: Show the debug mask image in a separate window
-        # Uncomment this for debugging in low light environments
-        # cv2.imshow("Cue Stick Detection", debug_mask)
         
         # Return line parameters and pointing status
         return (vx_scalar, vy_scalar, cue_x, cue_y), is_pointing_at_ball

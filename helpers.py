@@ -779,11 +779,11 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
     # Apply aruco mask
     mask = cv2.bitwise_and(mask, aruco_mask)
     
-    # ADDED: Apply table mask if provided
+    # Apply table mask if provided
     if table_mask is not None:
         mask = cv2.bitwise_and(mask, table_mask)
     
-    # ADDED: Apply morphological operations to improve detection
+    # Apply morphological operations to improve detection
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -791,7 +791,7 @@ def detect_cue_orientation(frame, cue_ball, aruco_mask, table_mask=None):
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # ADDED: Create a debug image to visualize the mask
+    # Create a debug image to visualize the mask
     debug_mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
     
     if contours:
